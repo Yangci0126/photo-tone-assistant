@@ -1,0 +1,145 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+<meta name="theme-color" content="#0d0e11" />
+<title>影调助手 · 摄影新手 PS 修图建议生成器</title>
+<meta name="description" content="上传照片，自动分析画面元素与影调，结合图片类型与 15 种预设风格，生成可直接在 Photoshop 里照做的调色与修图参数建议。" />
+<link rel="stylesheet" href="./styles.css" />
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%23f0b64b'/%3E%3Ctext x='32' y='45' font-size='36' text-anchor='middle' fill='%231a1206' font-family='sans-serif'%3E%E5%BD%B1%3C/text%3E%3C/svg%3E" />
+</head>
+<body>
+
+<header class="topbar">
+  <div class="brand">
+    <span class="logo" aria-hidden="true">影</span>
+    <div class="brand-txt">
+      <h1>影调助手</h1>
+      <p>上传照片 · 识别画面 · 生成能照做的 PS 参数</p>
+    </div>
+  </div>
+  <div class="topbar-side">
+    <span class="pill privacy">🔒 图片只在你本机浏览器解析，不会上传</span>
+  </div>
+</header>
+
+<main class="wrap">
+  <div class="stage">
+
+    <!-- ============ 预览区 ============ -->
+    <section class="panel panel-preview">
+      <div class="panel-head">
+        <h2><span class="num">01</span>上传图片 · 画面预览</h2>
+        <div class="head-tools">
+          <button type="button" class="ghost sm" id="btnCompare" hidden>按住看原图</button>
+          <button type="button" class="ghost sm" id="btnChange" hidden>更换图片</button>
+        </div>
+      </div>
+
+      <div class="dropzone" id="dropzone" tabindex="0" role="button" aria-label="上传图片">
+        <svg class="dz-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <rect x="3" y="4" width="18" height="16" rx="2.5"/>
+          <circle cx="8.5" cy="9.5" r="1.6"/>
+          <path d="M21 15.5l-4.6-4.2a1.6 1.6 0 0 0-2.2 0L4 20"/>
+        </svg>
+        <p class="dz-title">拖入图片，或点击选择</p>
+        <p class="dz-sub">JPG / PNG / WEBP，也可以直接 <kbd>Ctrl</kbd> + <kbd>V</kbd> 粘贴</p>
+        <p class="dz-note">建议长边 1200px 以上，分析更准</p>
+        <input type="file" id="fileInput" accept="image/*" hidden />
+      </div>
+
+      <div class="preview" id="preview" hidden>
+        <div class="frame">
+          <div class="imgwrap" id="imgwrap">
+            <img id="previewImg" alt="待修图片预览" />
+            <div class="tint" id="tintLayer"></div>
+            <div class="scan" id="scanLayer" hidden>
+              <span class="scan-line"></span>
+              <span class="scan-txt" id="scanTxt">正在解析画面…</span>
+              <span class="scan-bar"><i id="scanBar"></i></span>
+            </div>
+          </div>
+        </div>
+        <div class="preview-meta">
+          <span id="metaName" class="meta-name">—</span>
+          <span id="metaSize">—</span>
+          <span id="metaStyle" class="meta-style">风格预览：未应用</span>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============ 控制区 ============ -->
+    <section class="panel panel-control">
+
+      <div class="step">
+        <div class="step-head">
+          <span class="num">02</span>
+          <h2>选择图片类型</h2>
+          <span class="hint" id="typeHint">决定后续的修图重点</span>
+        </div>
+        <div class="types" id="typeList"></div>
+      </div>
+
+      <div class="step">
+        <div class="step-head">
+          <span class="num">03</span>
+          <h2>选择目标风格</h2>
+          <span class="hint" id="styleHint">15 种预设</span>
+        </div>
+        <div class="filters" id="filterTabs" role="tablist" aria-label="风格分类"></div>
+        <div class="styles" id="styleList"></div>
+      </div>
+
+      <div class="run-bar">
+        <div class="run-hint" id="runHint">先上传一张照片</div>
+        <button type="button" class="cta" id="btnRun" disabled>开始识别并生成建议</button>
+      </div>
+    </section>
+  </div>
+
+  <!-- ============ 结果区 ============ -->
+  <section class="result" id="result" hidden aria-live="polite">
+    <div class="result-head">
+      <div class="result-title-wrap">
+        <p class="eyebrow">识别结果 · 修图方案</p>
+        <h2 id="resultTitle">—</h2>
+        <p class="result-sub" id="resultSub"></p>
+      </div>
+      <div class="result-actions">
+        <button type="button" class="btn-line" id="btnCopy">复制全部建议</button>
+        <button type="button" class="btn-line" id="btnDownload">下载 TXT</button>
+        <button type="button" class="btn-line ghost" id="btnRestart">换个风格</button>
+      </div>
+    </div>
+
+    <div class="detect" id="detect"></div>
+    <div class="order" id="order"></div>
+    <div class="groups" id="groups"></div>
+
+    <p class="disclaimer">
+      说明：<b>元素判定</b>基于本机对色彩、亮度、肤色占比、边缘纹理的统计推断，用于给出调整方向；最终类型与风格仍以你的判断为准。<b>所有参数为起点区间</b>，请以画面实际效果微调，不要一次拉到底。
+    </p>
+  </section>
+
+  <details class="howto">
+    <summary>新手怎么用？（30 秒看完）</summary>
+    <ol>
+      <li>上传照片后，先在「图片类型」里选对场景：人像修皮肤、风光修层次、COSER 修妆造。</li>
+      <li>选一个风格，左侧预览会用近似滤镜给你看大致调性（不是最终效果，仅作方向参考）。</li>
+      <li>点「开始识别」，得到一份按顺序排好的 PS 参数表：项目 → 参数范围 → 作用区域 → 为什么这样调。</li>
+      <li>在 Photoshop 里照抄即可：影调先做（滤镜 › Camera Raw 滤镜 › 基本），颜色再做（HSL、曲线、分离色调），最后才是磨皮、锐化和导出。</li>
+    </ol>
+  </details>
+</main>
+
+<footer class="foot">
+  <span>影调助手 · 纯静态页面，可直接托管在 GitHub Pages</span>
+  <span>建议 Photoshop 2020+ / Camera Raw 12+</span>
+</footer>
+
+<noscript><p class="noscript">需要开启 JavaScript 才能处理图片。</p></noscript>
+
+<script src="./app.js"></script>
+</body>
+</html>
