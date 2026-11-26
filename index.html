@@ -20,7 +20,7 @@
     </div>
   </div>
   <div class="topbar-side">
-    <span class="pill privacy">🔒 图片只在你本机浏览器解析，不会上传</span>
+    <span class="pill privacy" id="privacyPill">🔒 默认零上传：图片只在本机解析</span>
   </div>
 </header>
 
@@ -72,6 +72,61 @@
     <!-- ============ 控制区 ============ -->
     <section class="panel panel-control">
 
+      <!-- AI 识别（可选） -->
+      <div class="ai-bar" id="aiBar">
+        <div class="ai-head">
+          <span class="ai-badge" id="aiBadge" data-on="0">本地</span>
+          <div class="ai-title">
+            <b>识别方式</b>
+            <span class="ai-state" id="aiState">本地像素规则 · 暖棕色场景可能判不准</span>
+          </div>
+          <button type="button" class="ghost sm" id="aiToggle" aria-expanded="false">配置 AI</button>
+        </div>
+
+        <div class="ai-panel" id="aiPanel" hidden>
+          <p class="ai-intro">
+            本地规则靠颜色和纹理统计，<b>分不清「暖棕色的树林」和「暖棕色的猫」</b>——这两者像素几乎一样。
+            接一个视觉大模型就能准确得多。Key 只存在你本机的浏览器里，识别时由浏览器直接请求服务商。
+          </p>
+
+          <div class="ai-grid">
+            <label class="ai-field">
+              <span>服务商</span>
+              <select id="aiProvider">
+                <option value="ark">火山方舟（豆包）</option>
+                <option value="openai">OpenAI</option>
+                <option value="dashscope">阿里云百炼（通义千问）</option>
+                <option value="zhipu">智谱 GLM</option>
+                <option value="custom">自定义（OpenAI 兼容）</option>
+              </select>
+            </label>
+
+            <label class="ai-field">
+              <span>模型</span>
+              <input type="text" id="aiModel" spellcheck="false" placeholder="模型名或接入点 ID" />
+            </label>
+
+            <label class="ai-field wide">
+              <span>Base URL</span>
+              <input type="text" id="aiBase" spellcheck="false" placeholder="https://..." />
+            </label>
+
+            <label class="ai-field wide">
+              <span>API Key</span>
+              <input type="password" id="aiKey" spellcheck="false" autocomplete="off" placeholder="只保存在本机浏览器" />
+            </label>
+          </div>
+
+          <p class="ai-tip" id="aiTip"></p>
+
+          <div class="ai-actions">
+            <button type="button" class="btn-line" id="aiSave">保存并测试</button>
+            <button type="button" class="btn-line ghost" id="aiClear">清除配置</button>
+            <span class="ai-msg" id="aiMsg"></span>
+          </div>
+        </div>
+      </div>
+
       <div class="step">
         <div class="step-head">
           <span class="num">02</span>
@@ -117,15 +172,19 @@
     <div class="order" id="order"></div>
     <div class="groups" id="groups"></div>
 
-    <p class="disclaimer">
-      说明：<b>元素判定</b>基于本机对色彩、亮度、肤色占比、边缘纹理的统计推断，用于给出调整方向；最终类型与风格仍以你的判断为准。<b>所有参数为起点区间</b>，请以画面实际效果微调，不要一次拉到底。
+    <p class="disclaimer" id="disclaimer">
+      说明：<b>类型判定</b>有两种方式——未配置 AI 时用本机统计规则（看色彩、亮度、肤色占比、边缘纹理），
+      这类方法<b>分不清暖棕色场景与暖棕色动物</b>，所以证据不足时会直接说「无法判断」而不是硬猜；
+      配置了视觉大模型后由模型做语义判断，准确得多。<b>最终类型与风格仍以你的判断为准。</b>
+      <b>所有参数为起点区间</b>，请以画面实际效果微调，不要一次拉到底。
     </p>
   </section>
 
   <details class="howto">
     <summary>新手怎么用？（30 秒看完）</summary>
     <ol>
-      <li>上传照片后，先在「图片类型」里选对场景：人像修皮肤、风光修层次、COSER 修妆造、宠物修毛发。</li>
+      <li>上传照片后，先在「图片类型」里选对场景：人像修皮肤、风光修层次、COSER 修妆造、宠物修毛发。自动判断不准就手动点，一步都不耽误。</li>
+      <li>要让识别更准，在「识别方式」里配一个视觉大模型（填自己的 API Key，只存在本机浏览器）。配好之后类型由模型判断，连画面元素也会一起识别出来。</li>
       <li>选一个风格，左侧预览会用近似滤镜给你看大致调性（不是最终效果，仅作方向参考）。</li>
       <li>点「开始识别」，得到一份按顺序排好的 PS 参数表：项目 → 参数范围 → 作用区域 → 为什么这样调。</li>
       <li>在 Photoshop 里照抄即可：影调先做（滤镜 › Camera Raw 滤镜 › 基本），颜色再做（HSL、曲线、分离色调），最后才是磨皮、锐化和导出。</li>

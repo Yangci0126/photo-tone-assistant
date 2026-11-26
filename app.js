@@ -297,8 +297,8 @@ const TYPES = {
 
 /* ---------------- 4. 状态与 DOM ---------------- */
 const state = {
-  file: null, fileName: '', url: '', img: null, m: null,
-  type: null, styleId: null, tab: 'all', plan: null, busy: false
+  file: null, fileName: '', url: '', img: null, m: null, guess: null, ai: null,
+  type: null, styleId: null, tab: 'all', plan: null, busy: false, userPickedType: false
 };
 
 const el = {
@@ -331,7 +331,22 @@ const el = {
   groups: $('#groups'),
   btnCopy: $('#btnCopy'),
   btnDownload: $('#btnDownload'),
-  btnRestart: $('#btnRestart')
+  btnRestart: $('#btnRestart'),
+  // AI 识别配置
+  aiBar: $('#aiBar'),
+  aiBadge: $('#aiBadge'),
+  aiState: $('#aiState'),
+  aiToggle: $('#aiToggle'),
+  aiPanel: $('#aiPanel'),
+  aiProvider: $('#aiProvider'),
+  aiModel: $('#aiModel'),
+  aiBase: $('#aiBase'),
+  aiKey: $('#aiKey'),
+  aiTip: $('#aiTip'),
+  aiSave: $('#aiSave'),
+  aiClear: $('#aiClear'),
+  aiMsg: $('#aiMsg'),
+  privacyPill: $('#privacyPill')
 };
 
 /* ---------------- 5. 图像分析 ---------------- */
@@ -371,6 +386,9 @@ function analyze(img) {
   const GX = 12, GY = 12;
   const cellSkin = new Float32Array(GX * GY);
   const cellAll = new Float32Array(GX * GY);
+  // 毛色与中频纹理的网格分布：用来判断「毛色是长成一团主体，还是铺满整个画面」
+  const cellCoat = new Float32Array(GX * GY);
+  const cellTex = new Float32Array(GX * GY);
 
   let lumSum = 0, satSum = 0, rSum = 0, gSum = 0, bSum = 0;
   let skin = 0, sky = 0, foliage = 0, redP = 0, brown = 0, water = 0, neutralP = 0;
@@ -411,8 +429,9 @@ function analyze(img) {
 
     // 毛色：暖棕 / 金毛 / 奶白。比 brown 放宽上限，覆盖浅色毛与高光毛
     if (r >= g - 5 && g >= b * 0.86 && r - b > 13 && lum > 26 && lum < 228 && sat > 0.06) {
-      fur++; furLum += lum; coatArr[i] = 1;
+      fur++; furLum += lum; coatArr[i] = 1; cellCoat[ci]++;
     } else if (sat < 0.14 && lum > 88 && lum < 250) {
+      // 浅色毛只计入面积，不计入空间分布——否则浅灰墙面 / 阴天背景会被当成「毛铺满了画面」
       paleFur++; furLum += lum; coatArr[i] = 2;
     }
 
@@ -454,6 +473,10 @@ function analyze(img) {
         if (mag > 26 && mag <= 100) centerMid++;
       }
       if (coatArr[i] && mag > 40) coatEdge++;
+      if (mag > 26 && mag <= 100) {
+        const tci = Math.min(GY - 1, ((y / h * GY) | 0)) * GX + Math.min(GX - 1, ((x / w * GX) | 0));
+        cellTex[tci]++;
+      }
     }
   }
 
@@ -505,6 +528,49 @@ function analyze(img) {
     }
   }
 
+  // ---- 毛色的空间分布：主体是一整团居中，风光是同色肌理铺满画面 ----
+  const coatRatio = new Float32Array(GX * GY);
+  let coatCells = 0;
+  for (let c = 0; c < GX * GY; c++) {
+    coatRatio[c] = cellAll[c] > 0 ? cellCoat[c] / cellAll[c] : 0;
+    if (coatRatio[c] > 0.32) coatCells++;
+  }
+  const seenCoat = new Uint8Array(GX * GY);
+  let coatBlobCount = 0, coatMainArea = 0;
+  for (let c = 0; c < GX * GY; c++) {
+    if (seenCoat[c] || coatRatio[c] <= 0.32) continue;
+    const stack = [c]; seenCoat[c] = 1;
+    let area = 0;
+    while (stack.length) {
+      const cur = stack.pop(); area++;
+      const ccx = cur % GX, ccy = (cur / GX) | 0;
+      const nb = [cur - 1, cur + 1, cur - GX, cur + GX];
+      for (let k = 0; k < 4; k++) {
+        const t = nb[k];
+        if (t < 0 || t >= GX * GY) continue;
+        if (k === 0 && ccx === 0) continue;
+        if (k === 1 && ccx === GX - 1) continue;
+        if (seenCoat[t] || coatRatio[t] <= 0.32) continue;
+        seenCoat[t] = 1; stack.push(t);
+      }
+    }
+    if (area >= 2) coatBlobCount++;
+    if (area > coatMainArea) coatMainArea = area;
+  }
+
+  // 纹理的中心 / 边缘比：宠物影像中心毛密、四周背景平滑；风光是整幅均匀
+  let texC = 0, texCAll = 0, texB = 0, texBAll = 0;
+  for (let ty = 0; ty < GY; ty++) {
+    for (let tx = 0; tx < GX; tx++) {
+      const c = ty * GX + tx;
+      const onBorder = (ty === 0 || ty === GY - 1 || tx === 0 || tx === GX - 1);
+      if (onBorder) { texB += cellTex[c]; texBAll += cellAll[c]; }
+      else { texC += cellTex[c]; texCAll += cellAll[c]; }
+    }
+  }
+  const texCenterD = texCAll > 0 ? texC / texCAll : 0;
+  const texBorderD = texBAll > 0 ? texB / texBAll : 0;
+
   const skinPct = skin / n;
   const skyPct = sky / n;
   const foliagePct = foliage / n;
@@ -534,6 +600,8 @@ function analyze(img) {
     waterPct: water / n, brownPct: brown / n, neutralPct: neutralP / n, redPct: redP / n,
     skinCx: skinCx, skinCy: skinCy,
     faceBox: bestBox, blobCount: blobs,
+    // 最大肤色连通块占画面的比例：人脸最多也就 20~25%，铺满说明这是暖色场景而不是一张脸
+    skinMainPct: bestArea / (GX * GY),
     edgeDensity: edgeCnt / n,
     detail: gradSum / n,
     furPct: fur / n,
@@ -544,6 +612,14 @@ function analyze(img) {
     coatTexture: coatEdge / Math.max(1, fur + paleFur),
     centerMidPct: centerAll > 0 ? centerMid / centerAll : 0,
     midEdgePct: midCnt / Math.max(1, (w - 2) * (h - 2)),
+    // 空间分布：毛色铺满度、最大毛色块占比、主块紧致度、纹理中心-边缘差
+    coatSpread: coatCells / (GX * GY),
+    coatMainPct: coatMainArea / (GX * GY),
+    coatCompact: coatCells > 0 ? coatMainArea / coatCells : 0,
+    coatBlobCount: coatBlobCount,
+    texCenterD: texCenterD,
+    texBorderD: texBorderD,
+    texSep: texCenterD - texBorderD,
     hueTop: HUE_NAMES[hueTop],
     isNight: avgLum < 62,
     isLowContrast: contrast < 30,
@@ -554,28 +630,264 @@ function analyze(img) {
 
 // 补齐需要 hist 的统计（放在 analyze 内部计算更自然，这里集中算一次）
 
-/* ---------------- 6. 类型推断 ---------------- */
+/* ---------------- 6. 类型推断 ----------------
+   设计原则：宁可说「不确定」，也不猜一个相近的类型。
+   暖棕色场景（秋林 / 沙漠 / 岩壁 / 麦田）和暖棕动物在像素层面几乎同分布，
+   纯统计无法可靠区分——这类情况交给多模态模型，本地只做保守判断。 */
 function guessType(m) {
-  const pScore = clamp(m.skinPct * 4.2, 0, 1) + (m.blobCount >= 1 ? 0.28 : 0) + (m.skinCy > 0.1 && m.skinCy < 0.62 ? 0.12 : 0);
-  const lScore = clamp(m.skyPct * 1.5, 0, 0.75) + clamp(m.foliagePct * 1.8, 0, 0.7) + (m.isFlat ? 0.12 : 0);
-
-  // 宠物：颜色靠不住（暖色毛发几乎全部落进肤色判据），真正稳定的是「毛色面积 × 纹理密度」
   const coatPct = m.furPct + m.paleFurPct * 0.5;
-  const petScore = 0.35 * clamp(coatPct / 0.4, 0, 1)
-    + 0.65 * clamp((m.centerMidPct - 0.18) / 0.20, 0, 1)
-    - clamp(m.skyPct * 0.8, 0, 0.35)
-    - clamp(m.foliagePct * 0.5, 0, 0.3)
-    - clamp((m.blobCount - 2) * 0.12, 0, 0.25);
+  const pct = v => Math.round(v * 100) + '%';
+  const hueNature = ['黄绿', '绿', '青绿', '青'].indexOf(m.hueTop) >= 0;
 
-  let type = 'portrait', conf = pScore, why = '肤色区域占比明显，判断为人物主体';
-  if (petScore > 0.36 && coatPct > 0.12) {
-    type = 'pet'; conf = petScore;
-    why = '毛色占比 ' + Math.round(coatPct * 100) + '%、纹理密集，判断为宠物主体';
+  /* 人像：需要有「像一张脸的一团肤色」，而不是铺满画面的暖色。
+     关键约束：皮肤是平滑的——中部纹理一旦变密，就说明这是毛发而不是脸。 */
+  const skinSmooth = clamp((0.20 - m.centerMidPct) / 0.12, 0, 1);
+  const faceLike = m.skinMainPct >= 0.02 && m.skinMainPct < 0.30 && m.skinPct > 0.02 && skinSmooth >= 0.35;
+  const skinSpread = clamp((m.skinMainPct - 0.30) / 0.35, 0, 1); // 肤色铺满度
+  let sPortrait = clamp(
+    clamp(m.skinPct / 0.09, 0, 1) * 0.38
+    + (faceLike ? 0.30 : 0)
+    + (faceLike && m.blobCount >= 1 ? 0.12 : 0)
+    + ((m.skinCy > 0.08 && m.skinCy < 0.66) ? 0.10 : 0)
+    + skinSmooth * 0.10,
+    0, 1);
+  if (skinSpread > 0) sPortrait *= (1 - 0.78 * skinSpread);
+
+  /* 风光：天空 / 植被 / 水面 / 整体偏绿 / 自然色相 多方取证 */
+  const sLand = clamp(
+    0.34 * clamp(m.skyPct / 0.13, 0, 1)
+    + 0.28 * clamp(m.foliagePct / 0.18, 0, 1)
+    + 0.14 * clamp(m.waterPct / 0.10, 0, 1)
+    + 0.12 * clamp((m.greenDelta + 1) / 8, 0, 1)
+    + 0.12 * (hueNature ? 1 : 0),
+    0, 1);
+
+  /* 宠物：纹理确凿 + 暖毛成团 + 画面里还有别的东西（有背景才叫主体） */
+  const petTexture = clamp((m.centerMidPct - 0.14) / 0.14, 0, 1);
+  let sPet = clamp(
+    0.26 * clamp(coatPct / 0.26, 0, 1)
+    + 0.38 * petTexture
+    + 0.24 * clamp((0.60 - m.coatSpread) / 0.26, 0, 1)
+    + 0.12 * clamp((m.coatCompact - 0.5) / 0.4, 0, 1),
+    0, 1);
+
+  const vetoes = [];
+  if (m.skyPct >= 0.08) vetoes.push('天空占 ' + pct(m.skyPct));
+  if (m.foliagePct >= 0.12) vetoes.push('植被占 ' + pct(m.foliagePct));
+  if (m.coatSpread >= 0.60) vetoes.push('暖色纹理铺满 ' + pct(m.coatSpread) + ' 的画面');
+  if (m.coatMainPct >= 0.52) vetoes.push('最大暖色块占 ' + pct(m.coatMainPct));
+  if (coatPct < 0.10) vetoes.push('毛色面积只有 ' + pct(coatPct));
+  if (vetoes.length) sPet *= 0.30;
+
+  const ranked = [
+    { k: 'portrait', s: sPortrait },
+    { k: 'pet', s: sPet },
+    { k: 'landscape', s: sLand }
+  ].sort((a, b) => b.s - a.s);
+  const top = ranked[0], second = ranked[1];
+  const margin = clamp((top.s - second.s) / 0.22, 0, 1);
+  const conf = clamp(top.s * (0.55 + 0.45 * margin), 0, 1);
+
+  /* 三分都不够高 → 不下判断。这是这张图真正需要的诚实回答 */
+  const FLOOR = 0.42;
+  if (top.s < FLOOR) {
+    return {
+      type: null, conf: 0,
+      why: '画面特征不够明确，本地规则无法可靠判断类型',
+      scores: { portrait: sPortrait, pet: sPet, landscape: sLand }, vetoed: vetoes
+    };
   }
-  else if (pScore < 0.3 && m.skyPct > 0.12) { type = 'landscape'; conf = lScore; why = '天空与自然色块占比高，判断为风光'; }
-  else if (pScore < 0.55 && m.foliagePct > 0.3) { type = 'landscape'; conf = lScore; why = '植被覆盖率高，判断为自然场景'; }
-  else if (pScore < 0.18 && lScore < 0.2) { type = 'portrait'; conf = 0.12; why = '未识别到明确主体，按人物类型起步更稳妥'; }
-  return { type: type, conf: clamp(conf, 0, 1), why: why };
+
+  let why = '';
+  if (top.k === 'pet') {
+    why = '暖毛占 ' + pct(coatPct) + '、中部纹理密度 ' + pct(petTexture) + '，且毛色集中在主体区域';
+  } else if (top.k === 'landscape') {
+    const ev = [];
+    if (m.skyPct > 0.05) ev.push('天空 ' + pct(m.skyPct));
+    if (m.foliagePct > 0.04) ev.push('植被 ' + pct(m.foliagePct));
+    if (m.waterPct > 0.04) ev.push('水面 ' + pct(m.waterPct));
+    if (!ev.length) ev.push('自然色相为主（' + m.hueTop + '）');
+    why = '检测到 ' + ev.join('、') + '，判断为自然场景';
+    if (vetoes.length && vetoes[0].indexOf('天空占') < 0) why += '（已排除宠物：' + vetoes[0] + '）';
+  } else {
+    why = m.skinPct > 0.02
+      ? '肤色占 ' + pct(m.skinPct) + (m.blobCount >= 1 ? '、检测到 ' + m.blobCount + ' 处肤色团块' : '') + '，判断为人物主体'
+      : '未检测到湖泊 / 山林 / 毛色主体等特征，按人物类型起步更稳妥';
+  }
+  if (conf < 0.55) why += '，把握不大，建议手动确认';
+
+  return { type: top.k, conf: conf, why: why, scores: { portrait: sPortrait, pet: sPet, landscape: sLand }, vetoed: vetoes };
+}
+
+/* ---------------- 6.5 多模态 AI 识别（可选，自带 Key） ----------------
+   本地统计法分不清「暖棕色树林」和「暖棕色猫」，这不是调参能解决的：
+   两者在颜色、纹理、明暗上的分布几乎重合。语义判断必须交给视觉模型。 */
+
+const AI_PRESETS = {
+  ark: {
+    name: '火山方舟（豆包）',
+    base: 'https://ark.cn-beijing.volces.com/api/v3',
+    model: '',
+    tip: '模型填「接入点 ID」（ep- 开头）或模型名，例如 doubao-1.5-vision-pro-32k-250115。在方舟控制台「在线推理」里创建接入点即可拿到。'
+  },
+  openai: {
+    name: 'OpenAI',
+    base: 'https://api.openai.com/v1',
+    model: 'gpt-4o-mini',
+    tip: '需要浏览器能直接访问 api.openai.com（国内需自备网络环境）。'
+  },
+  dashscope: {
+    name: '阿里云百炼',
+    base: 'https://dashscope.aliyuncs.com/compatible-mode/v1',
+    model: 'qwen-vl-max-latest',
+    tip: '在阿里云百炼控制台创建 API Key，兼容 OpenAI 协议。'
+  },
+  zhipu: {
+    name: '智谱 GLM',
+    base: 'https://open.bigmodel.cn/api/paas/v4',
+    model: 'glm-4v-flash',
+    tip: 'glm-4v-flash 有免费额度，适合先试通再换更强的模型。'
+  },
+  custom: {
+    name: '自定义',
+    base: '',
+    model: '',
+    tip: '任何兼容 OpenAI /chat/completions 协议的视觉模型接口都可以，Base URL 填到 /v1 这一层。'
+  }
+};
+
+const AI_STORE = 'photo-tone-ai-config';
+
+const AI_SYS = [
+  '你是摄影后期助手。任务：判断一张照片的「主体类型」，供后续修图流程使用。',
+  '类型只能从下面四个里选一个：',
+  'portrait = 普通人物（人像、写真、生活照、街拍、自拍、多人合影）',
+  'coser = COSER（cosplay、二次元妆造、角色扮演、漫展）',
+  'landscape = 自然风景或环境场景（山林、草地、海景、天空、沙漠、城市风光、建筑、街景、室内空间，以及没有明确单一主体的风景）',
+  'pet = 宠物（猫、狗等动物作为画面主体的照片）',
+  '判断要点：',
+  '1. 画面里即使有人，只要人很小、不是主体（风景里的游客），仍判 landscape。',
+  '2. 画面里没有动物时，绝不能判 pet。暖棕色的树林、沙漠、岩壁、麦田、木地板都不是 pet。',
+  '3. 有动物且动物占据画面主要位置时才判 pet；人与宠物同框且人更大时判 portrait。',
+  '4. 判断不确定时，confidence 给低值（如 0.4），不要硬凑高置信。',
+  '同时列出画面关键元素，从下列挑（最多 6 个）：人物 面部 皮肤 头发 妆容 服装 天空 云 山 树林 草地 花朵 水面 湖 海 沙滩 岩石 沙漠 建筑 道路 桥梁 夜景 灯光 室内 窗户 食物 宠物 毛发 眼睛',
+  '只输出一行 JSON，不要解释、不要代码块、不要 markdown：',
+  '{"type":"portrait|coser|landscape|pet","confidence":0.0,"elements":["元素"],"reason":"不超过25字的中文理由"}'
+].join('\n');
+
+function getAIConfig() {
+  try {
+    const raw = localStorage.getItem(AI_STORE);
+    if (!raw) return null;
+    const c = JSON.parse(raw);
+    if (!c || !c.base || !c.model || !c.key) return null;
+    return c;
+  } catch (e) { return null; }
+}
+
+function aiReady() { return !!getAIConfig(); }
+
+/* 压到长边 1024 再编码：既省 token，也避免超大 base64 被服务商拒绝 */
+function imageForAI(img, maxEdge) {
+  const iw = img.naturalWidth || img.width;
+  const ih = img.naturalHeight || img.height;
+  const sc = Math.min(1, maxEdge / Math.max(iw, ih));
+  const w = Math.max(16, Math.round(iw * sc));
+  const h = Math.max(16, Math.round(ih * sc));
+  const cv = document.createElement('canvas');
+  cv.width = w; cv.height = h;
+  const cx = cv.getContext('2d');
+  cx.fillStyle = '#ffffff';
+  cx.fillRect(0, 0, w, h);
+  cx.drawImage(img, 0, 0, w, h);
+  return cv.toDataURL('image/jpeg', 0.82);
+}
+
+function parseAIReply(text) {
+  if (!text) return null;
+  let s = String(text).trim();
+  s = s.replace(/^```(?:json)?\s*/i, '').replace(/```\s*$/, '').trim();
+  const st = s.indexOf('{'), en = s.lastIndexOf('}');
+  if (st < 0 || en <= st) return null;
+  let obj;
+  try { obj = JSON.parse(s.slice(st, en + 1)); } catch (e) { return null; }
+  const type = String(obj.type || '').toLowerCase().trim();
+  if (['portrait', 'coser', 'landscape', 'pet'].indexOf(type) < 0) return null;
+  const cf = parseFloat(obj.confidence);
+  return {
+    type: type,
+    confidence: isFinite(cf) ? clamp(cf, 0, 1) : 0.7,
+    elements: Array.isArray(obj.elements) ? obj.elements.slice(0, 6).map(function (x) { return String(x); }) : [],
+    reason: String(obj.reason || '')
+  };
+}
+
+async function aiRecognize() {
+  const cfg = getAIConfig();
+  if (!cfg) throw new Error('尚未配置 AI');
+  if (!state.img) throw new Error('还没有图片');
+
+  const base = cfg.base.replace(/\/+$/, '');
+  const url = /\/chat\/completions$/.test(base) ? base : base + '/chat/completions';
+  const dataUrl = imageForAI(state.img, 1024);
+
+  const ctrl = typeof AbortController !== 'undefined' ? new AbortController() : null;
+  const timer = ctrl ? setTimeout(function () { ctrl.abort(); }, 45000) : null;
+
+  let resp;
+  try {
+    resp = await fetch(url, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': 'Bearer ' + cfg.key
+      },
+      body: JSON.stringify({
+        model: cfg.model,
+        temperature: 0.1,
+        max_tokens: 400,
+        messages: [
+          { role: 'system', content: AI_SYS },
+          {
+            role: 'user',
+            content: [
+              { type: 'text', text: '识别这张照片的主体类型和关键元素，只返回 JSON。' },
+              { type: 'image_url', image_url: { url: dataUrl } }
+            ]
+          }
+        ]
+      }),
+      signal: ctrl ? ctrl.signal : undefined
+    });
+  } catch (e) {
+    if (e && e.name === 'AbortError') throw new Error('请求超时（45 秒），可换更快的模型');
+    throw new Error('网络请求失败：' + ((e && e.message) || '可能是浏览器拦截或服务商未开放跨域'));
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+
+  if (!resp.ok) {
+    let msg = 'HTTP ' + resp.status;
+    try {
+      const j = await resp.json();
+      const e2 = j.error || j;
+      msg = (e2 && (e2.message || e2.code)) || msg;
+    } catch (e3) { /* 忽略解析失败 */ }
+    if (resp.status === 401 || resp.status === 403) msg += '（Key 无效或没有该模型权限）';
+    if (resp.status === 404) msg += '（检查 Base URL 与模型名）';
+    throw new Error(msg);
+  }
+
+  const j = await resp.json();
+  const ch = j && j.choices && j.choices[0];
+  let content = ch && ch.message ? ch.message.content : '';
+  // 少数服务商返回数组结构
+  if (Array.isArray(content)) {
+    content = content.map(function (p) { return (p && p.text) || ''; }).join('');
+  }
+  const out = parseAIReply(content);
+  if (!out) throw new Error('模型返回的内容不是可解析的 JSON');
+  return out;
 }
 
 /* ---------------- 7. 方案生成 ---------------- */
@@ -994,11 +1306,22 @@ function updateRun() {
 function renderDetect(m, type) {
   const cards = [];
   const push = (k, v, hot) => cards.push('<div class="dcard' + (hot ? ' hot' : '') + '"><span class="k">' + k + '</span><span class="v">' + v + '</span></div>');
-  push('主体判定', TYPES[type].name, true);
+
+  // AI 识别结果优先占前两张卡：它是语义判断，比像素统计更该被看到
+  if (state.ai) {
+    push('AI 判定', TYPES[state.ai.type].name + ' · ' + Math.round(state.ai.confidence * 100) + '%', true);
+    if (state.ai.elements.length) push('AI 识别元素', esc(state.ai.elements.join('、')));
+    if (state.ai.reason) push('AI 判断依据', esc(state.ai.reason));
+  } else {
+    push('主体判定', TYPES[type].name, true);
+  }
+
   push('平均亮度', Math.round(m.avgLum) + ' / 255');
   push('反差', Math.round(m.contrast));
   push('饱和度', (m.sat * 100).toFixed(0) + '%');
-  if (m.skinPct > 0.005) push('肤色区域', (m.skinPct * 100).toFixed(1) + '%');
+  // 非人像场景里，肤色色域命中的多半是木头/泥土/落叶，改个更准确的说法免得误读
+  const skinLabel = (state.ai && (state.ai.type === 'landscape' || state.ai.type === 'pet')) ? '暖色色域' : '肤色区域';
+  if (m.skinPct > 0.005) push(skinLabel, (m.skinPct * 100).toFixed(1) + '%');
   if (m.furPct + m.paleFurPct > 0.06) push('毛发 / 毛色块', Math.round((m.furPct + m.paleFurPct) * 100) + '%', type === 'pet');
   if (m.coatTexture > 0.2 && (m.furPct + m.paleFurPct) > 0.06) push('毛色纹理密度', Math.round(m.coatTexture * 100) + '%');
   if (m.skyPct > 0.02) push('天空占比', (m.skyPct * 100).toFixed(0) + '%');
@@ -1059,6 +1382,9 @@ function loadFile(file) {
   state.file = file;
   state.fileName = file.name || '剪贴板图片';
   state.url = URL.createObjectURL(file);
+  // 换图后旧的 AI 结论作废，重新走识别
+  state.ai = null;
+  state.userPickedType = false;
 
   const img = new Image();
   img.onload = function () {
@@ -1080,9 +1406,22 @@ function loadFile(file) {
 
     if (state.m) {
       const g = guessType(state.m);
-      el.typeHint.textContent = g.why + '（置信 ' + Math.round(g.conf * 100) + '%）';
+      state.guess = g;
+      const confTxt = Math.round(g.conf * 100) + '%';
+      const TRUST = 0.55;
       if (!state.type) {
-        selectType(g.type, false);
+        if (g.type && g.conf >= TRUST) {
+          selectType(g.type, false);
+          // 自动判出类型时一并给上推荐风格，否则按钮会一直停在禁用态
+          if (!state.styleId) selectStyle(REC[g.type]);
+          el.typeHint.textContent = '建议：' + TYPES[g.type].name + ' · ' + g.why + '（置信 ' + confTxt + '）';
+        } else if (g.type) {
+          el.typeHint.textContent = '不太确定（最接近「' + TYPES[g.type].name + '」' + confTxt + '），请手动选择';
+        } else {
+          el.typeHint.textContent = '无法判断类型，请手动选择（或配置 AI 识别）';
+        }
+      } else {
+        el.typeHint.textContent = g.type ? (g.why + '（置信 ' + confTxt + '）') : g.why;
       }
     } else {
       el.typeHint.textContent = '这张图无法读取像素，请换一张 JPG / PNG';
@@ -1141,20 +1480,66 @@ function selectStyle(id) {
 async function run() {
   if (state.busy) return;
   if (!state.img) { toast('先上传一张照片'); return; }
-  if (!state.type) { toast('先选择图片类型'); return; }
-  if (!state.styleId) { toast('再选一个目标风格'); return; }
   if (!state.m) { toast('这张图无法解析像素，请换一张 JPG / PNG'); return; }
+  const hasAI = aiReady();
+  // 配置了 AI 时不必先手选类型/风格：让模型判断，风格取推荐值
+  if (!hasAI) {
+    if (!state.type) { toast('先选择图片类型'); return; }
+    if (!state.styleId) { toast('再选一个目标风格'); return; }
+  }
+
   state.busy = true;
   updateRun();
   el.imgwrap.classList.remove('orig');
   el.scanLayer.hidden = false;
   el.scanBar.style.width = '0%';
 
-  const steps = ['读取像素与直方图…', '识别主体与场景元素…', '匹配「' + styleById(state.styleId).name + '」参数…', '生成 PS 执行清单…'];
+  /* --- 先用大模型识别（已配置时） --- */
+  let aiRes = null, aiErr = '';
+  if (hasAI) {
+    el.scanTxt.textContent = 'AI 正在识别画面…';
+    el.scanBar.style.width = '20%';
+    try {
+      aiRes = await aiRecognize();
+      state.ai = aiRes;
+    } catch (e) {
+      state.ai = null;
+      aiErr = (e && e.message) || '未知错误';
+    }
+  }
+
+  /* --- 类型决策：AI 结果优先，但不覆盖用户主动点选的类型 --- */
+  if (aiRes) {
+    if (!state.userPickedType || !state.type) {
+      if (state.type !== aiRes.type) selectType(aiRes.type, true);
+    }
+    el.typeHint.textContent = 'AI 判断：' + TYPES[aiRes.type].name
+      + '（置信 ' + Math.round(aiRes.confidence * 100) + '%）'
+      + (aiRes.reason ? ' · ' + aiRes.reason : '');
+  } else if (aiErr) {
+    el.typeHint.textContent = 'AI 识别失败：' + aiErr + '（已回退本地规则）';
+  }
+
+  if (!state.type) {
+    state.busy = false;
+    el.scanLayer.hidden = true;
+    updateRun();
+    toast('AI 也没能确定类型' + (aiErr ? '：' + aiErr : '') + '，请手动选择图片类型');
+    return;
+  }
+  if (!state.styleId) selectStyle(REC[state.type]);
+
+  const steps = [
+    '读取像素与直方图…',
+    '识别主体与场景元素…',
+    '匹配「' + styleById(state.styleId).name + '」参数…',
+    '生成 PS 执行清单…'
+  ];
+  const startPct = hasAI && aiRes ? 45 : 0;
   for (let i = 0; i < steps.length; i++) {
     el.scanTxt.textContent = steps[i];
-    el.scanBar.style.width = Math.round((i + 1) / steps.length * 100) + '%';
-    await sleep(260 + Math.random() * 160);
+    el.scanBar.style.width = Math.round(startPct + (i + 1) / steps.length * (100 - startPct)) + '%';
+    await sleep(230 + Math.random() * 150);
   }
 
   state.plan = buildPlan(state.type, styleById(state.styleId), state.m);
@@ -1172,6 +1557,10 @@ function planToText() {
   lines.push('影调助手 · PS 修图建议');
   lines.push('图片：' + state.fileName);
   lines.push('类型：' + TYPES[state.type].name + ' ｜ 风格：' + st.name);
+  if (state.ai) {
+    lines.push('AI 识别：' + TYPES[state.ai.type].name + '（置信 ' + Math.round(state.ai.confidence * 100) + '%）'
+      + (state.ai.elements.length ? ' ｜ 元素：' + state.ai.elements.join('、') : ''));
+  }
   lines.push('识别：' + state.plan.summary);
   lines.push('');
   lines.push('【执行顺序】');
@@ -1203,6 +1592,46 @@ function toast(msg) {
 }
 
 /* ---------------- 10. 事件绑定 ---------------- */
+function setAIMsg(text, kind) {
+  if (!el.aiMsg) return;
+  el.aiMsg.textContent = text || '';
+  el.aiMsg.className = 'ai-msg' + (kind ? ' ' + kind : '');
+}
+
+function refreshAIUI() {
+  const cfg = getAIConfig();
+  const on = !!cfg;
+  el.aiBadge.textContent = on ? 'AI' : '本地';
+  el.aiBadge.setAttribute('data-on', on ? '1' : '0');
+  const p = on ? (AI_PRESETS[cfg.provider] || {}) : null;
+  el.aiState.textContent = on
+    ? ((p && p.name) ? p.name : '自定义接口') + ' · ' + cfg.model
+    : '本地像素规则 · 暖棕色场景可能判不准';
+
+  if (on) {
+    el.aiProvider.value = cfg.provider || 'custom';
+    el.aiBase.value = cfg.base;
+    el.aiModel.value = cfg.model;
+    el.aiKey.value = cfg.key;
+    el.aiTip.textContent = (AI_PRESETS[cfg.provider] || {}).tip || '';
+  } else {
+    const d = AI_PRESETS.ark;
+    el.aiProvider.value = 'ark';
+    el.aiBase.value = d.base;
+    el.aiModel.value = d.model;
+    el.aiTip.textContent = d.tip;
+  }
+
+  // 隐私提示要跟着走：配置 AI 后图片确实会离开本机
+  if (el.privacyPill) {
+    el.privacyPill.textContent = on
+      ? '📤 已接 AI：识别时图片会发送给你指定的模型服务商'
+      : '🔒 默认零上传：图片只在本机解析';
+    el.privacyPill.style.borderColor = on ? 'rgba(255,180,84,.34)' : '';
+    el.privacyPill.style.color = on ? 'var(--warn)' : '';
+  }
+}
+
 function bind() {
   el.dropzone.addEventListener('click', () => el.fileInput.click());
   el.fileInput.addEventListener('click', e => e.stopPropagation());
@@ -1261,7 +1690,65 @@ function bind() {
 
   el.typeList.addEventListener('click', function (e) {
     const b = e.target.closest('.type-card');
-    if (b) selectType(b.dataset.type);
+    if (!b) return;
+    state.userPickedType = true;
+    selectType(b.dataset.type);
+  });
+
+  /* ---- AI 识别配置 ---- */
+  el.aiToggle.addEventListener('click', function () {
+    const willOpen = el.aiPanel.hidden;
+    el.aiPanel.hidden = !willOpen;
+    el.aiToggle.setAttribute('aria-expanded', String(willOpen));
+    el.aiToggle.textContent = willOpen ? '收起' : '配置 AI';
+  });
+
+  el.aiProvider.addEventListener('change', function () {
+    const p = AI_PRESETS[el.aiProvider.value] || {};
+    el.aiBase.value = p.base || '';
+    el.aiModel.value = p.model || '';
+    el.aiTip.textContent = p.tip || '';
+  });
+
+  el.aiSave.addEventListener('click', async function () {
+    const base = el.aiBase.value.trim();
+    const model = el.aiModel.value.trim();
+    const key = el.aiKey.value.trim();
+    if (!base || !model || !key) {
+      setAIMsg('Base URL / 模型 / Key 三项都要填', 'bad');
+      return;
+    }
+    try {
+      localStorage.setItem(AI_STORE, JSON.stringify({
+        provider: el.aiProvider.value, base: base, model: model, key: key
+      }));
+    } catch (e) {
+      setAIMsg('浏览器禁用了本地存储，无法保存', 'bad');
+      return;
+    }
+    refreshAIUI();
+
+    if (!state.img) {
+      setAIMsg('已保存。上传照片后点识别即可验证', 'ok');
+      return;
+    }
+    setAIMsg('已保存，正在测试识别…', '');
+    el.aiSave.disabled = true;
+    try {
+      const r = await aiRecognize();
+      setAIMsg('测试通过：判为「' + TYPES[r.type].name + '」置信 ' + Math.round(r.confidence * 100) + '%' + (r.elements.length ? ' · 元素：' + r.elements.join('、') : ''), 'ok');
+    } catch (e) {
+      setAIMsg('测试失败：' + ((e && e.message) || '未知错误'), 'bad');
+    } finally {
+      el.aiSave.disabled = false;
+    }
+  });
+
+  el.aiClear.addEventListener('click', function () {
+    try { localStorage.removeItem(AI_STORE); } catch (e) { /* 忽略 */ }
+    el.aiKey.value = '';
+    refreshAIUI();
+    setAIMsg('已清除，回到本地规则判断', '');
   });
 
   el.filterTabs.addEventListener('click', function (e) {
@@ -1320,4 +1807,5 @@ renderTypes();
 renderTabs();
 renderStyles();
 bind();
+refreshAIUI();
 updateRun();
