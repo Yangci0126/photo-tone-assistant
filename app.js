@@ -160,7 +160,7 @@ const STYLES = [
     curve: '黑场轻抬（输出 6）；高光轻压',
     split: '高光 色相 40 / 饱和 12；阴影 色相 28 / 饱和 6',
     hsl: { orange: { h: 0, s: 4, l: 8 }, yellow: { h: 0, s: 4, l: 6 }, blue: { h: 0, s: -8, l: 0 } },
-    extra: [mk('可选颜色 · 红色', '青色 -5 / 黄色 +8', '皮肤 / 暖色毛发', '整体加暖最容易把皮肤和暖色毛发烧成橙色，用可选颜色把颜色拉回来。', 'style', 'tune')]
+    extra: [mk('可选颜色 · 红色', '青色 -5 / 黄色 +8', '暖色区域（皮肤 / 毛发 / 落叶 / 木石）', '整体加暖最容易把暖色区域烧成一片橙色，用可选颜色把颜色拉回来。', 'style', 'tune')]
   },
   {
     id: 'guofeng', name: '国风', cat: 'universal', tag: '通用',
@@ -891,14 +891,14 @@ async function aiRecognize() {
 }
 
 /* ---------------- 7. 方案生成 ---------------- */
-function hueRow(key, cfg, whyExtra) {
+function hueRow(key, cfg, whyExtra, areaOverride) {
   const name = HSL_NAME[key] || key;
   const parts = [];
   if (cfg.h) parts.push('色相 ' + fmtNum(cfg.h));
   if (cfg.s) parts.push('饱和 ' + fmtNum(cfg.s));
   if (cfg.l) parts.push('明度 ' + fmtNum(cfg.l));
   if (!parts.length) parts.push('保持 0');
-  return mk('HSL · ' + name, parts.join(' / '), HSL_AREA[key] || '对应色域', whyExtra, 'style', 'tune');
+  return mk('HSL · ' + name, parts.join(' / '), areaOverride || HSL_AREA[key] || '对应色域', whyExtra, 'style', 'tune');
 }
 
 function hslRelevant(key, m, type) {
@@ -914,9 +914,14 @@ function hslRelevant(key, m, type) {
   }
 }
 
-function hslWhy(key, m) {
-  if (key === 'orange') return '橙色既管肤色也管暖色毛发，人像和宠物图里一动橙色，皮肤与毛色立刻变干净或立刻变脏，所以放在最先调。';
-  if (key === 'red') return '红色管嘴唇、妆容和红色道具，微调就能提气色。';
+function hslWhy(key, m, type) {
+  const scene = type === 'landscape';
+  if (key === 'orange') {
+    return scene
+      ? '橙色管的是秋叶、夕阳、岩石和木头的暖调：一动橙色，整张图立刻变「浓」或立刻发灰，所以放在最先调。'
+      : '橙色既管肤色也管暖色毛发，人像和宠物图里一动橙色，皮肤与毛色立刻变干净或立刻变脏，所以放在最先调。';
+  }
+  if (key === 'red') return scene ? '红色管秋叶、晚霞与红色岩层，微调就能定住画面的「浓」。' : '红色管嘴唇、妆容和红色道具，微调就能提气色。';
   if (key === 'green') return '绿色控制植被，风光里最容易「艳得失真」的就是绿色。';
   if (key === 'blue' || key === 'cyan') return '蓝青控制天空和水面，压暗明度能让天空有层次、不发白。';
   if (key === 'yellow') return '黄色影响草地、阳光和暖色反光，决定画面暖不暖。';
@@ -927,6 +932,8 @@ function buildPlan(type, style, m) {
   const T = style.target;
   const tone = [], color = [], subject = [], local = [], detail = [], extraItems = [];
   const tn = TYPES[type].name;
+  // 「肤色」只对人像 / 宠物成立；风景里的暖色是落叶、土壤、岩石，文案不能一套用到底
+  const skinLike = type === 'portrait' || type === 'coser' || type === 'pet';
 
   /* ========== 基础影调 ========== */
   // 曝光：先按实测亮度做校正，风格只在校正幅度不大时才起主导作用
@@ -1003,14 +1010,14 @@ function buildPlan(type, style, m) {
   const tintAdj = clamp(m.greenDelta * 1.6, -22, 22);
   const tMid = clamp(T.tint + tintAdj, -35, 35);
   const tWhy = Math.abs(m.greenDelta) > 3.5
-    ? '中性区偏' + (m.greenDelta > 0 ? '绿' : '洋红') + '（G 偏差 ' + fmtNum(m.greenDelta, 0) + '），向' + (m.greenDelta > 0 ? '洋红' : '绿') + '方向修正，皮肤才不会发青。'
-    : '色调只做风格微调：正值偏洋红（皮肤更粉），负值偏绿（更冷峻），幅度控制在 ±10 以内最安全。';
-  color.push(mk('色调', rangeText(tMid, 4, 0), '全图 / 皮肤', tWhy, 'diag', 'tune'));
+    ? '中性区偏' + (m.greenDelta > 0 ? '绿' : '洋红') + '（G 偏差 ' + fmtNum(m.greenDelta, 0) + '），向' + (m.greenDelta > 0 ? '洋红' : '绿') + '方向修正，' + (skinLike ? '皮肤才不会发青' : '整体才不会发青') + '。'
+    : '色调只做风格微调：正值偏洋红（' + (skinLike ? '皮肤更粉' : '整体更暖') + '），负值偏绿（更冷峻），幅度控制在 ±10 以内最安全。';
+  color.push(mk('色调', rangeText(tMid, 4, 0), skinLike ? '全图 / 皮肤' : '全图', tWhy, 'diag', 'tune'));
 
   const vibMid = clamp(T.vib + (m.sat < 0.16 ? 9 : (m.sat > 0.46 ? -7 : 0)), -20, 45);
   color.push(mk('自然饱和度',
     rangeText(vibMid, 5, 0),
-    '全图（优先保护肤色）',
+    skinLike ? '全图（优先保护肤色）' : '全图（优先保护已有的高饱和区）',
     '当前平均饱和度 ' + (m.sat * 100).toFixed(0) + '%（' + (m.sat < 0.18 ? '偏低' : (m.sat > 0.45 ? '偏高' : '适中')) + '）。自然饱和度会绕开已经很艳的区域，比直接拉饱和度安全。',
     'diag', vibMid >= 0 ? 'up' : 'down'));
 
@@ -1018,12 +1025,14 @@ function buildPlan(type, style, m) {
   color.push(mk('饱和度',
     rangeText(satMid, 4, 0),
     '全图',
-    '「' + style.name + '」的整体色彩浓度靠这一项定调。' + (satMid < 0 ? '降饱和是为了让画面「稳」，尤其人像降 10 左右肤色会更高级。' : '加饱和时优先用自然饱和度，这一项只做小幅补足。'),
+    '「' + style.name + '」的整体色彩浓度靠这一项定调。' + (satMid < 0 ? '降饱和是为了让画面「稳」' + (skinLike ? '，尤其人像降 10 左右肤色会更高级。' : '，降 10 左右整张图就不会「吵」。') : '加饱和时优先用自然饱和度，这一项只做小幅补足。'),
     'style', satMid >= 0 ? 'up' : 'down'));
 
   const hslKeys = Object.keys(style.hsl).filter(k => hslRelevant(k, m, type));
   const useKeys = hslKeys.length ? hslKeys : Object.keys(style.hsl).slice(0, 2);
-  useKeys.forEach(k => color.push(hueRow(k, style.hsl[k], hslWhy(k, m))));
+  // 橙色通道在人像里管肤色，在风景里管的是落叶 / 岩石 / 木头，区域说明跟着类型走
+  const orangeArea = skinLike ? HSL_AREA.orange : '暖色主体（落叶 / 岩石 / 木石）';
+  useKeys.forEach(k => color.push(hueRow(k, style.hsl[k], hslWhy(k, m, type), k === 'orange' ? orangeArea : '')));
 
   color.push(mk('RGB 曲线',
     style.curve,
@@ -1161,7 +1170,8 @@ function buildPlan(type, style, m) {
     local.push(mk('天空蒙版', '线性渐变 从画面上 1/3 处下拉；曝光 -0.2 ~ -0.4EV；蓝色 明度 -6 / 饱和 +8；高光 -10', '天空区域',
       '识别到天空占画面 ' + (m.skyPct * 100).toFixed(0) + '%，单独压暗能让天地分层，也避免整体压暗把地面弄脏。', 'local', 'down'));
   }
-  if (m.skinPct > 0.012) {
+  // 主体径向提亮只对「有明确主体」的类型成立；风景里的暖色多半是落叶 / 岩石，不能当成人物来打光
+  if (m.skinPct > 0.012 && (type === 'portrait' || type === 'coser' || type === 'pet')) {
     local.push(mk('主体径向提亮', '径向滤镜以' + (type === 'pet' ? '宠物头部' : '人物') + '为中心，羽化 70%；曝光 +0.1 ~ +0.25EV；清晰度 +5', type === 'pet' ? '宠物 / 头部 / 眼睛' : '人物 / 面部',
       '把视觉重心提亮一点，等于给观众指路。幅度要小，超过 0.4EV 就会看出「贴上去的光」。', 'local', 'up'));
     local.push(mk('背景压暗', (type === 'pet' ? '选择主体 → 反选' : '选择人物 → 反选') + ' → 曲线下压 -8 ~ -14（或用 Camera Raw 蒙版「背景」）', '主体以外的区域',
@@ -1228,10 +1238,12 @@ function buildPlan(type, style, m) {
     { title: '细节与输出', path: 'USM 锐化 / Camera Raw 细节 / 导出', items: detail }
   ].filter(g => g.items.length);
 
+  // 风景里的「肤色」其实是落叶 / 土壤 / 岩石，标签要跟着类型走，否则读起来像误判
+  const skinWord = (type === 'landscape' || type === 'pet') ? '暖色色域' : '肤色区域';
   const summary =
     '识别到的画面特征：平均亮度 ' + Math.round(m.avgLum) + '、反差 ' + Math.round(m.contrast) +
     '、饱和 ' + (m.sat * 100).toFixed(0) + '%' +
-    (m.skinPct > 0.01 ? '、肤色区域 ' + skinTxt + '%' : '') +
+    (m.skinPct > 0.01 ? '、' + skinWord + ' ' + skinTxt + '%' : '') +
     (m.skyPct > 0.03 ? '、天空 ' + (m.skyPct * 100).toFixed(0) + '%' : '') +
     (m.foliagePct > 0.03 ? '、植被 ' + (m.foliagePct * 100).toFixed(0) + '%' : '') +
     '。按「' + TYPES[type].name + ' + ' + style.name + '」给出 ' +
@@ -1319,11 +1331,15 @@ function renderDetect(m, type) {
   push('平均亮度', Math.round(m.avgLum) + ' / 255');
   push('反差', Math.round(m.contrast));
   push('饱和度', (m.sat * 100).toFixed(0) + '%');
-  // 非人像场景里，肤色色域命中的多半是木头/泥土/落叶，改个更准确的说法免得误读
-  const skinLabel = (state.ai && (state.ai.type === 'landscape' || state.ai.type === 'pet')) ? '暖色色域' : '肤色区域';
+
+  // 暖色块 / 中频纹理是本地统计里的「毛感」指标，只有判定成宠物时才是毛发。
+  // 其他类型必须换成中性说法，否则风景里的落叶、岩石会被读成「一张毛」。
+  const isPet = type === 'pet';
+  const warmPct = m.furPct + m.paleFurPct;
+  const skinLabel = (type === 'landscape' || isPet) ? '暖色色域' : '肤色区域';
   if (m.skinPct > 0.005) push(skinLabel, (m.skinPct * 100).toFixed(1) + '%');
-  if (m.furPct + m.paleFurPct > 0.06) push('毛发 / 毛色块', Math.round((m.furPct + m.paleFurPct) * 100) + '%', type === 'pet');
-  if (m.coatTexture > 0.2 && (m.furPct + m.paleFurPct) > 0.06) push('毛色纹理密度', Math.round(m.coatTexture * 100) + '%');
+  if (warmPct > 0.06) push(isPet ? '毛发 / 毛色块' : '暖色块占比', Math.round(warmPct * 100) + '%', isPet);
+  if (m.coatTexture > 0.2 && warmPct > 0.06) push(isPet ? '毛色纹理密度' : '纹理密度', Math.round(m.coatTexture * 100) + '%');
   if (m.skyPct > 0.02) push('天空占比', (m.skyPct * 100).toFixed(0) + '%');
   if (m.foliagePct > 0.02) push('植被占比', (m.foliagePct * 100).toFixed(0) + '%');
   if (m.waterPct > 0.05) push('水面/反光', (m.waterPct * 100).toFixed(0) + '%');
@@ -1334,6 +1350,10 @@ function renderDetect(m, type) {
   push('主色调', m.hueTop);
   if (m.isNight) push('场景', '低照度 / 夜景', true);
   else if (m.isHazy) push('场景', '空气透视 / 发灰', true);
+  // 非宠物类型也出现高暖色块 + 高纹理时，补一句出处说明，免得被当成误判
+  if (!isPet && (warmPct > 0.30 || m.coatTexture > 0.45)) {
+    cards.push('<p class="detect-note">暖色块与纹理密度来自本地像素统计：在风景里它们通常来自落叶、土壤、岩石和枝叶，与「毛发」无关，也不参与类型判定。</p>');
+  }
   el.detect.innerHTML = cards.join('');
 }
 
