@@ -272,11 +272,12 @@ const TYPES = {
     icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M2.6 18.6l5.6-7.4 3.6 4.6 2.6-3.1 6.9 5.9z"/><circle cx="17.2" cy="6.4" r="1.9"/></svg>',
     order: [
       '先校正：水平线、镜头畸变、裁剪掉边缘杂物',
-      'Camera Raw 基本：高光全力恢复 → 阴影提亮 → 对比微调',
+      'Camera Raw 基本：高光压制 → 阴影提亮 → 对比微调',
       '去朦胧（远景发灰时）→ 色温定基调（暖日出 / 冷阴天）',
-      'HSL 分组处理：天空蓝青、植被绿黄、土地橙黄',
-      '蒙版：天空渐变压暗 + 前景提亮 + 视觉中心径向提亮',
-      '输出锐化（景观锐化）+ 长边 4096 导出'
+      'HSL 分组处理：{hsl}',
+      { t: '蒙版：天空渐变压暗 + 前景提亮', need: ['渐变滤镜 · 天空', '前景提亮'] },
+      { t: '视觉中心径向提亮', need: ['主体径向提亮'] },
+      '输出锐化（景观锐化）+ 长边 {export} 导出{exportNote}'
     ]
   },
   pet: {
@@ -966,8 +967,12 @@ function buildPlan(type, style, m) {
     '画面明暗标准差 ' + Math.round(m.contrast) + '（' + cWord + '），「' + style.name + '」需要' + (T.contrast < 0 ? '低反差来留白，所以宁可少加' : '一定的层次支撑，但别拉到 30 以上') + '。',
     'diag', cMid >= 0 ? 'up' : 'down'));
 
+  // 高光：先看实测有没有「必须压」的证据（裁切 + 接近纯白），再决定风格力度用几成。
+  // 画面根本不裁切时，风格写死 -40 只会把天空压灰，读者还会发现「理由说没溢出、数值压了 40」。
+  const clipEvidence = clamp(m.clipHigh / 3 + m.nearWhite / 25, 0, 1);
+  const hlScale = 0.45 + 0.55 * clipEvidence;
   const hlRisk = m.clipHigh * 0.9 + m.nearWhite * 0.16;
-  const hiMid = clamp(T.hi - hlRisk * 0.85, -95, 14);
+  const hiMid = clamp(T.hi * hlScale - hlRisk * 0.85, -95, 14);
   // 区域名必须跟着类型走：风景里没有「额头」，宠物图里也没有「头发」
   const hiArea = humanLike ? '亮部 / 天空 / 额头'
     : (type === 'landscape' ? '亮部 / 天空 / 云 / 亮部岩层' : '亮部 / 高光毛发');
@@ -975,7 +980,9 @@ function buildPlan(type, style, m) {
     : (type === 'landscape' ? '天空或亮部岩层已经死白' : '高光毛发已经死白');
   const hiWhy = m.clipHigh > 1.2
     ? '高光溢出 ' + m.clipHigh.toFixed(1) + '%，' + hiDead + '，必须先压回来才能找回层次。'
-    : (m.nearWhite > 8 ? '接近纯白的区域占 ' + m.nearWhite.toFixed(1) + '%，压低高光能给亮部留出细节。' : '亮部没有明显溢出，高光只做风格性的压制，保留通透感。');
+    : (m.nearWhite > 8
+      ? '接近纯白的区域占 ' + m.nearWhite.toFixed(1) + '%，压低高光能给亮部留出细节。'
+      : '亮部没有明显溢出（裁切 ' + m.clipHigh.toFixed(1) + '%、接近纯白 ' + m.nearWhite.toFixed(1) + '%），没有非压不可的理由，所以「' + style.name + '」的高光压制只保留 ' + Math.round(hlScale * 100) + '% 力度，避免把天空压灰。');
   tone.push(mk('高光', rangeText(hiMid, 5, 0), hiArea, hiWhy, 'diag', 'down'));
 
   // 阴影：曝光已经提亮时，阴影要相应收敛，避免「双重提亮」把画面洗白
@@ -990,12 +997,16 @@ function buildPlan(type, style, m) {
     : '暗部还有细节，提阴影主要是为了' + (type === 'portrait' ? '让皮肤过渡更柔、避免鼻影发黑' : '让暗部层次更耐看') + '。';
   tone.push(mk('阴影', rangeText(shMid, 6, 0), shArea, shWhy, 'diag', 'up'));
 
-  const whMid = clamp(T.wh + (m.nearWhite > 5 ? -5 : 0), -30, 30);
+  // 白色阶同理：白点没顶到 255 就没有推它的理由，跟着证据打折
+  const whMid = clamp(Math.round(T.wh * (0.2 + 0.8 * clipEvidence)) + (m.nearWhite > 5 ? -5 : 0), -30, 30);
   const blMid = clamp(T.bl - (m.shadowPct > 12 ? 5 : 0), -60, 40);
   tone.push(mk('白色阶 / 黑色阶',
     '白色 ' + rangeText(whMid, 3, 0) + '；黑色 ' + rangeText(blMid, 3, 0),
     '两端端点',
-    '白色阶决定「亮部的白有多亮」，黑色阶决定「暗部有多实」。' + style.name + '的调性需要在两端各给一点' + (T.bl > 0 ? '抬升（褪色感）' : '下压（扎实感）') + '，中间调才不会发灰。',
+    '白色阶决定「亮部的白有多亮」，黑色阶决定「暗部有多实」。' + style.name + '的调性需要在两端' +
+    (blMid > 0 ? '抬一点黑（褪色感）' : '压一点黑（扎实感）') +
+    (Math.abs(whMid) <= 1 ? '；本图白点没有顶到 255，白色阶保持 0 附近即可，再往上推就只剩死白' : '') +
+    '，中间调才不会发灰。',
     'style', 'tune'));
 
   const clMid = T.clarity + (m.isFlat ? 4 : 0);
@@ -1058,6 +1069,17 @@ function buildPlan(type, style, m) {
   // 橙色通道在人像里管肤色，在风景里管的是落叶 / 岩石 / 木头，区域说明跟着类型走
   const orangeArea = skinLike ? HSL_AREA.orange : '暖色主体（落叶 / 岩石 / 木石）';
   useKeys.forEach(k => color.push(hueRow(k, style.hsl[k], hslWhy(k, m, type), k === 'orange' ? orangeArea : '')));
+
+  // 风格没给橙 / 红，但画面本身就是暖色主导时补一条：丹霞、秋叶、木屋都吃这一条。
+  // 只从风格取通道，会让「画面主色」完全没有调整入口——丹霞的层理全在橙红里，却不给 HSL 橙。
+  const hasWarmHsl = useKeys.indexOf('orange') >= 0 || useKeys.indexOf('red') >= 0;
+  if (!hasWarmHsl && !skinLike && m.brownPct > 0.16) {
+    color.push(mk('HSL · 橙色',
+      '色相 0 / 饱和 +' + (m.brownPct > 0.3 ? 8 : 5) + ' / 明度 -3',
+      type === 'landscape' ? '暖色主体（岩层 / 落叶 / 木石）' : '暖色主体',
+      '画面暖棕占 ' + (m.brownPct * 100).toFixed(0) + '%，是这张图的主色，但「' + style.name + '」的 HSL 只给了冷色通道。给暖色补一点饱和、压一点明度，岩层的层理才分得开。',
+      'diag', 'tune'));
+  }
 
   color.push(mk('RGB 曲线',
     style.curve,
@@ -1137,13 +1159,18 @@ function buildPlan(type, style, m) {
         '远景 / 中景',
         '风光最忌全局一刀切。远景用去朦胧解决空气灰，中景用清晰度立结构，近景保持柔和，才有纵深——但这是「用蒙版分区」，不是给同一项再配一套数值。',
         'type', 'up'),
-      mk('可选颜色 · 绿色', '青色 +8 ~ +15；黄色 -5 ~ +5', '植被',
-        '自然界的绿偏黄偏青，直接加绿饱和会变「荧光绿」。用可选颜色把绿往青里推，立刻自然。', 'type', 'tune'),
-      mk('可选颜色 · 蓝色', '青色 -10 ~ -20；洋红 +3 ~ +8', '天空 / 水面',
-        '天空发紫或发灰，多数是蓝里青色过多，减青加一点点洋红，天空会变成干净的湛蓝。', 'type', 'tune'),
       mk('水平与透视校正', '裁剪拉直 / 透视校正：垂直 +2 ~ +6，水平 ±1', '地平线 / 建筑线条',
         '风光图的地平线歪 1° 都能被看出来，先校正再谈调色。', 'type', 'tune')
     );
+    // 可选颜色只给画面里真有的色域：没有植被就不必管绿，没有天空水面就不必管蓝
+    if (m.foliagePct > 0.03) {
+      subject.push(mk('可选颜色 · 绿色', '青色 +8 ~ +15；黄色 -5 ~ +5', '植被',
+        '自然界的绿偏黄偏青，直接加绿饱和会变「荧光绿」。用可选颜色把绿往青里推，立刻自然。', 'type', 'tune'));
+    }
+    if (m.skyPct > 0.03 || m.waterPct > 0.05) {
+      subject.push(mk('可选颜色 · 蓝色', '青色 -10 ~ -20；洋红 +3 ~ +8', '天空 / 水面',
+        '天空发紫或发灰，多数是蓝里青色过多，减青加一点点洋红，天空会变成干净的湛蓝。', 'type', 'tune'));
+    }
     // 天空压暗只在真的有天空时才给，且只给一次（这里给，局部精修不再重复）
     if (m.skyPct > 0.03) {
       subject.push(mk('渐变滤镜 · 天空', '线性渐变从地平线向上拉；曝光 -0.3 ~ -0.6EV；蓝色 饱和 +10 / 明度 -8', '天空',
@@ -1253,6 +1280,13 @@ function buildPlan(type, style, m) {
       '暗部 / 皮肤 / 天空',
       '实测亮度偏低（' + Math.round(m.avgLum) + '/255），暗部与纯色区域容易出彩色噪点。先降噪再锐化，顺序反了噪点会被一起锐化出来。',
       'out', 'tune'));
+  } else if (shMid >= 18) {
+    // 阴影提得多、但亮度/死黑都没触发降噪时，这一条是补的：提多少阴影，就得还多少噪点控制
+    detail.push(mk('减少杂色（提阴影后补）',
+      '明度 15 ~ 25；颜色 20 ~ 30（Camera Raw › 细节），只作用于阴影 / 前景暗部',
+      '阴影 / 前景暗部',
+      '阴影提了 ' + Math.round(shMid) + ' 点，暗部噪点会被一起提亮。这一张没有触发常规降噪（亮度 ' + Math.round(m.avgLum) + '/255、死黑 ' + m.shadowPct.toFixed(1) + '%），但提完阴影就该补一次——先降噪再锐化，顺序反了噪点会被锐化放大。',
+      'out', 'tune'));
   }
 
   const upNote = (nativeLong && nativeLong < 4096)
@@ -1314,12 +1348,26 @@ function buildPlan(type, style, m) {
     '。按「' + TYPES[type].name + ' + ' + style.name + '」给出 ' +
     groups.reduce((a, g) => a + g.items.length, 0) + ' 条可直接执行的 PS 参数。';
 
-  // 执行顺序里写死的「长边 4096 导出」必须跟着原图尺寸走，否则等于教人放大
-  const order = TYPES[type].order.map(function (s) {
-    if (s.indexOf('长边 4096 导出') < 0) return s;
-    return nativeLong
-      ? s.replace('长边 4096 导出', '长边 ' + printEdge + ' 导出（原图满尺寸，不放大）')
-      : s;
+  /* 执行顺序从「实际生成的条目」来：
+     方案里没有的操作不写进顺序表（否则会承诺一个正文里不存在的「视觉中心径向提亮」），
+     导出尺寸跟着原图走，HSL 那一行列出真正给到通道。 */
+  const flatItems = groups.reduce(function (a, g) { return a.concat(g.items); }, []);
+  const haveItem = Object.create(null);
+  flatItems.forEach(function (it) { haveItem[paramKey(it.name)] = true; });
+  const hslNames = flatItems
+    .filter(function (it) { return it.name.indexOf('HSL · ') === 0; })
+    .map(function (it) { return it.name.slice(6); });
+  const exportNote = (nativeLong && nativeLong < 4096) ? '（原图满尺寸，不放大）' : '';
+  const order = [];
+  TYPES[type].order.forEach(function (o) {
+    const ent = typeof o === 'string' ? { t: o } : o;
+    if (ent.need && !ent.need.every(function (n) { return haveItem[paramKey(n)]; })) return;
+    let text = String(ent.t);
+    if (text.indexOf('{hsl}') >= 0) {
+      if (!hslNames.length) return;
+      text = text.replace('{hsl}', hslNames.join(' / '));
+    }
+    order.push(text.replace(/\{export\}/g, printEdge).replace(/\{exportNote\}/g, exportNote));
   });
 
   return { groups: groups, summary: summary, order: order };
