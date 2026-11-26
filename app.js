@@ -928,12 +928,22 @@ function hslWhy(key, m, type) {
   return '该色域在本张画面里占比明显，单独微调比全局加饱和更可控。';
 }
 
+/* 同一个滑块的归一化名字：去掉括号里的补充说明，「清晰度 / 纹理」与「清晰度」算同一项。
+   去重要求「同名才合并」，不做模糊匹配——否则宠物方案里的「白毛护高光」会被误并进「高光」。 */
+function paramKey(name) {
+  let k = String(name).replace(/（[^）]*）/g, '').replace(/\s+/g, ' ').trim();
+  if (k === '清晰度 / 纹理') k = '清晰度';
+  return k;
+}
+
 function buildPlan(type, style, m) {
   const T = style.target;
   const tone = [], color = [], subject = [], local = [], detail = [], extraItems = [];
   const tn = TYPES[type].name;
   // 「肤色」只对人像 / 宠物成立；风景里的暖色是落叶、土壤、岩石，文案不能一套用到底
   const skinLike = type === 'portrait' || type === 'coser' || type === 'pet';
+  // 「额头 / 头发」只属于人像；宠物说的是毛，风景说的是天空和岩层
+  const humanLike = type === 'portrait' || type === 'coser';
 
   /* ========== 基础影调 ========== */
   // 曝光：先按实测亮度做校正，风格只在校正幅度不大时才起主导作用
@@ -958,18 +968,27 @@ function buildPlan(type, style, m) {
 
   const hlRisk = m.clipHigh * 0.9 + m.nearWhite * 0.16;
   const hiMid = clamp(T.hi - hlRisk * 0.85, -95, 14);
+  // 区域名必须跟着类型走：风景里没有「额头」，宠物图里也没有「头发」
+  const hiArea = humanLike ? '亮部 / 天空 / 额头'
+    : (type === 'landscape' ? '亮部 / 天空 / 云 / 亮部岩层' : '亮部 / 高光毛发');
+  const hiDead = humanLike ? '天空或额头已经死白'
+    : (type === 'landscape' ? '天空或亮部岩层已经死白' : '高光毛发已经死白');
   const hiWhy = m.clipHigh > 1.2
-    ? '高光溢出 ' + m.clipHigh.toFixed(1) + '%，天空或额头已经死白，必须先压回来才能找回层次。'
+    ? '高光溢出 ' + m.clipHigh.toFixed(1) + '%，' + hiDead + '，必须先压回来才能找回层次。'
     : (m.nearWhite > 8 ? '接近纯白的区域占 ' + m.nearWhite.toFixed(1) + '%，压低高光能给亮部留出细节。' : '亮部没有明显溢出，高光只做风格性的压制，保留通透感。');
-  tone.push(mk('高光', rangeText(hiMid, 5, 0), '亮部 / 天空 / 额头', hiWhy, 'diag', 'down'));
+  tone.push(mk('高光', rangeText(hiMid, 5, 0), hiArea, hiWhy, 'diag', 'down'));
 
   // 阴影：曝光已经提亮时，阴影要相应收敛，避免「双重提亮」把画面洗白
   const shNeed = m.shadowPct * 0.45 + (m.avgLum < 90 ? 12 : (m.avgLum < 110 ? 5 : 0));
   const shMid = clamp(T.sh + shNeed - Math.max(0, expFix) * 25, -12, 80);
+  const shArea = humanLike ? '暗部 / 头发 / 阴影面'
+    : (type === 'landscape' ? '暗部 / 阴影面 / 树影 / 石缝' : '暗部 / 背光毛发');
+  const shLost = humanLike ? '头发、衣服、树影里已经没有细节'
+    : (type === 'landscape' ? '阴影、石缝、树影里已经没有细节' : '背光毛发里已经没有细节');
   const shWhy = m.shadowPct > 5
-    ? '暗部压死的像素占 ' + m.shadowPct.toFixed(1) + '%，头发、衣服、树影里已经没有细节，提阴影是找回层次最直接的办法。'
+    ? '暗部压死的像素占 ' + m.shadowPct.toFixed(1) + '%，' + shLost + '，提阴影是找回层次最直接的办法。'
     : '暗部还有细节，提阴影主要是为了' + (type === 'portrait' ? '让皮肤过渡更柔、避免鼻影发黑' : '让暗部层次更耐看') + '。';
-  tone.push(mk('阴影', rangeText(shMid, 6, 0), '暗部 / 头发 / 阴影面', shWhy, 'diag', 'up'));
+  tone.push(mk('阴影', rangeText(shMid, 6, 0), shArea, shWhy, 'diag', 'up'));
 
   const whMid = clamp(T.wh + (m.nearWhite > 5 ? -5 : 0), -30, 30);
   const blMid = clamp(T.bl - (m.shadowPct > 12 ? 5 : 0), -60, 40);
@@ -987,11 +1006,17 @@ function buildPlan(type, style, m) {
     'style', clMid >= 0 ? 'up' : 'down'));
 
   if (m.isHazy || type === 'landscape') {
-    const hzVal = m.isHazy ? '+10 ~ +20' : '-6 ~ +4';
+    // 去朦胧只在这里给一次。它是「补救」不是「风格」：画面本来通透就保持 0，
+    // 不许风格的 +8 ~ +16 和诊断的 -6 ~ +4 各说一套（同一张图上出现两组区间，读者没法照做）。
+    const hzVal = m.isHazy
+      ? '+10 ~ +20'
+      : '0（本图不发灰，保持 0；只有远景偏灰时再给 +6 ~ +10）';
     tone.push(mk('去朦胧',
       hzVal,
-      '远景 / 全图',
-      m.isHazy ? '画面平均对比 ' + Math.round(m.contrast) + '、饱和 ' + (m.sat * 100).toFixed(0) + '%，典型的空气透视发灰，去朦胧比加对比更干净。' : '远景略灰时加一点，画面通透后再减回来，避免整张发脏。',
+      type === 'landscape' ? '远景 / 中远景（近景不要用）' : '远景 / 全图',
+      m.isHazy
+        ? '画面平均对比 ' + Math.round(m.contrast) + '、饱和 ' + (m.sat * 100).toFixed(0) + '%，典型的空气透视发灰，去朦胧比加对比更干净。'
+        : '实测平均对比 ' + Math.round(m.contrast) + '、饱和 ' + (m.sat * 100).toFixed(0) + '%，不在发灰区间，所以这一项不该给正值——通透感靠压高光和提暗部拿到，靠去朦胧硬拉只会出脏边和光晕。',
       'diag', m.isHazy ? 'up' : 'tune'));
   }
 
@@ -1010,14 +1035,14 @@ function buildPlan(type, style, m) {
   const tintAdj = clamp(m.greenDelta * 1.6, -22, 22);
   const tMid = clamp(T.tint + tintAdj, -35, 35);
   const tWhy = Math.abs(m.greenDelta) > 3.5
-    ? '中性区偏' + (m.greenDelta > 0 ? '绿' : '洋红') + '（G 偏差 ' + fmtNum(m.greenDelta, 0) + '），向' + (m.greenDelta > 0 ? '洋红' : '绿') + '方向修正，' + (skinLike ? '皮肤才不会发青' : '整体才不会发青') + '。'
-    : '色调只做风格微调：正值偏洋红（' + (skinLike ? '皮肤更粉' : '整体更暖') + '），负值偏绿（更冷峻），幅度控制在 ±10 以内最安全。';
-  color.push(mk('色调', rangeText(tMid, 4, 0), skinLike ? '全图 / 皮肤' : '全图', tWhy, 'diag', 'tune'));
+    ? '中性区偏' + (m.greenDelta > 0 ? '绿' : '洋红') + '（G 偏差 ' + fmtNum(m.greenDelta, 0) + '），向' + (m.greenDelta > 0 ? '洋红' : '绿') + '方向修正，' + (humanLike ? '皮肤才不会发青' : (type === 'pet' ? '毛色才不会发青' : '整体才不会发青')) + '。'
+    : '色调只做风格微调：正值偏洋红（' + (humanLike ? '皮肤更粉' : '整体更暖') + '），负值偏绿（更冷峻），幅度控制在 ±10 以内最安全。';
+  color.push(mk('色调', rangeText(tMid, 4, 0), humanLike ? '全图 / 皮肤' : (type === 'pet' ? '全图 / 毛色' : '全图'), tWhy, 'diag', 'tune'));
 
   const vibMid = clamp(T.vib + (m.sat < 0.16 ? 9 : (m.sat > 0.46 ? -7 : 0)), -20, 45);
   color.push(mk('自然饱和度',
     rangeText(vibMid, 5, 0),
-    skinLike ? '全图（优先保护肤色）' : '全图（优先保护已有的高饱和区）',
+    humanLike ? '全图（优先保护肤色）' : (type === 'pet' ? '全图（优先保护毛色）' : '全图（优先保护已有的高饱和区）'),
     '当前平均饱和度 ' + (m.sat * 100).toFixed(0) + '%（' + (m.sat < 0.18 ? '偏低' : (m.sat > 0.45 ? '偏高' : '适中')) + '）。自然饱和度会绕开已经很艳的区域，比直接拉饱和度安全。',
     'diag', vibMid >= 0 ? 'up' : 'down'));
 
@@ -1101,22 +1126,31 @@ function buildPlan(type, style, m) {
   }
 
   if (type === 'landscape') {
+    // 高光恢复不再另开一套区间：先引用基础影调已经压到的值，只在「压完仍救不回」时给升级路径
     subject.push(
-      mk('高光恢复', '高光 -60 ~ -90；白色阶 -10 ~ -20', '天空 / 云 / 水面反光',
-        '风光图的天空几乎一定过曝。先把高光压到底看能不能救回层次，救不回就考虑后期换天，而不是硬拉。', 'type', 'down'),
-      mk('去朦胧 / 清晰度分层', '去朦胧 +8 ~ +16（远景）；清晰度 +10 ~ +20（中景山体）', '远景 / 中景',
-        '风光最忌全局一刀切。远景用去朦胧解决空气灰，中景用清晰度立结构，近景保持柔和，才有纵深。', 'type', 'up'),
+      mk('高光恢复（条件执行）', '基础影调已把高光压到 ' + rangeText(hiMid, 5, 0) +
+        '；若天空仍然没有层次，再继续下探到 -60 ~ -90，并且改用线性渐变蒙版只压天空。白色阶沿用基础影调的值，不要重复压，否则云的高光会断层。',
+        '天空 / 云 / 水面反光',
+        '风光图的天空最容易过曝，但「再压一次」不是无脑叠加：先看基础影调那一档够不够，不够再下探，且必须用蒙版把地面隔离出去，否则整张图会变闷。',
+        'type', 'down'),
+      mk('去朦胧与清晰度的分层做法', '去朦胧只作用远景（数值沿用「基础影调 · 去朦胧」，近景保持 0）；中景山体单独建 Camera Raw 蒙版加清晰度；近景不加',
+        '远景 / 中景',
+        '风光最忌全局一刀切。远景用去朦胧解决空气灰，中景用清晰度立结构，近景保持柔和，才有纵深——但这是「用蒙版分区」，不是给同一项再配一套数值。',
+        'type', 'up'),
       mk('可选颜色 · 绿色', '青色 +8 ~ +15；黄色 -5 ~ +5', '植被',
         '自然界的绿偏黄偏青，直接加绿饱和会变「荧光绿」。用可选颜色把绿往青里推，立刻自然。', 'type', 'tune'),
       mk('可选颜色 · 蓝色', '青色 -10 ~ -20；洋红 +3 ~ +8', '天空 / 水面',
         '天空发紫或发灰，多数是蓝里青色过多，减青加一点点洋红，天空会变成干净的湛蓝。', 'type', 'tune'),
-      mk('渐变滤镜 · 天空', '从地平线向上拉的线性渐变；曝光 -0.3 ~ -0.6EV；蓝色 饱和 +10 / 明度 -8', '天空',
-        '天空比地面亮 2~3 档是常态，用渐变滤镜压天空比整体降低曝光更精准，地面亮度不受影响。', 'local', 'down'),
-      mk('前景提亮', '线性渐变 / 径向滤镜：曝光 +0.2 ~ +0.4EV', '前景岩石 / 沙滩 / 花丛',
-        '压完天空后前景往往发闷，提一点前景能形成「亮—暗—亮」的层次，画面才有呼吸。', 'local', 'up'),
       mk('水平与透视校正', '裁剪拉直 / 透视校正：垂直 +2 ~ +6，水平 ±1', '地平线 / 建筑线条',
         '风光图的地平线歪 1° 都能被看出来，先校正再谈调色。', 'type', 'tune')
     );
+    // 天空压暗只在真的有天空时才给，且只给一次（这里给，局部精修不再重复）
+    if (m.skyPct > 0.03) {
+      subject.push(mk('渐变滤镜 · 天空', '线性渐变从地平线向上拉；曝光 -0.3 ~ -0.6EV；蓝色 饱和 +10 / 明度 -8', '天空',
+        '天空比地面亮 2~3 档是常态，用渐变滤镜压天空比整体降低曝光更精准，地面亮度不受影响。', 'local', 'down'));
+    }
+    subject.push(mk('前景提亮', '线性渐变 / 径向滤镜：曝光 +0.2 ~ +0.4EV', '前景岩石 / 沙滩 / 花丛',
+      '压完天空后前景往往发闷，提一点前景能形成「亮—暗—亮」的层次，画面才有呼吸。', 'local', 'up'));
   }
 
   if (type === 'pet') {
@@ -1166,7 +1200,8 @@ function buildPlan(type, style, m) {
   /* ========== 局部精修 ========== */
   styleLocal.forEach(function (it) { local.push(it); });
 
-  if (m.skyPct > 0.05) {
+  // 风景的天空压暗已经放在「类型专项」里，这里不再重复给第二套曝光参数
+  if (m.skyPct > 0.05 && type !== 'landscape') {
     local.push(mk('天空蒙版', '线性渐变 从画面上 1/3 处下拉；曝光 -0.2 ~ -0.4EV；蓝色 明度 -6 / 饱和 +8；高光 -10', '天空区域',
       '识别到天空占画面 ' + (m.skyPct * 100).toFixed(0) + '%，单独压暗能让天地分层，也避免整体压暗把地面弄脏。', 'local', 'down'));
   }
@@ -1192,6 +1227,10 @@ function buildPlan(type, style, m) {
 
   /* ========== 细节与输出 ========== */
   const isPortraitLike = type === 'portrait' || type === 'coser';
+  // 导出长边不能超过原图：原图只有 4032px 却硬要 4096px，等于插值放大，只会更糊
+  const nativeLong = Math.max(m.w || 0, m.h || 0);
+  const socialEdge = nativeLong ? Math.min(2048, nativeLong) : 2048;
+  const printEdge = nativeLong ? Math.min(4096, nativeLong) : 4096;
   let usmVal, usmArea, usmWhy;
   if (type === 'pet') {
     usmVal = '数量 70%~100% / 半径 0.8~1.2px / 阈值 6~10';
@@ -1216,10 +1255,13 @@ function buildPlan(type, style, m) {
       'out', 'tune'));
   }
 
+  const upNote = (nativeLong && nativeLong < 4096)
+    ? ' 另外：原图长边只有 ' + nativeLong + 'px，' + printEdge + 'px 就是它的满尺寸——别再放大到 4096，插值补不出细节，只会变糊。'
+    : '';
   detail.push(mk('导出设置',
-    'sRGB / 8 位 / JPEG 质量 90~95；长边 2048px（社交）或 4096px（打印 / 交付）',
+    'sRGB / 8 位 / JPEG 质量 90~95；长边 ' + socialEdge + 'px（社交）或 ' + printEdge + 'px（打印 / 交付）',
     '输出',
-    '很多人调完色在 PS 里好看，发出去变灰变艳，就是色彩空间没转 sRGB。导出前务必「转换为配置文件：sRGB IEC61966-2.1」。',
+    '很多人调完色在 PS 里好看，发出去变灰变艳，就是色彩空间没转 sRGB。导出前务必「转换为配置文件：sRGB IEC61966-2.1」。' + upNote,
     'out', 'tune'));
 
   detail.push(mk('保存分层文件',
@@ -1229,7 +1271,7 @@ function buildPlan(type, style, m) {
     'out', 'tune'));
 
   /* ========== 组装 ========== */
-  const groups = [
+  let groups = [
     { title: '基础影调', path: '滤镜 › Camera Raw 滤镜 › 基本（Light）', items: tone },
     { title: '色彩与白平衡', path: 'Camera Raw › 白平衡 / 颜色 / 曲线 / 分离色调', items: color },
     { title: '风格附加调整', path: 'Camera Raw › 效果（颗粒 / 晕影）｜PS 可选颜色 / 图层叠加', items: extraItems },
@@ -1237,6 +1279,29 @@ function buildPlan(type, style, m) {
     { title: '局部精修（蒙版）', path: 'Camera Raw › 蒙版 / 或 PS 调整图层 + 蒙版', items: local },
     { title: '细节与输出', path: 'USM 锐化 / Camera Raw 细节 / 导出', items: detail }
   ].filter(g => g.items.length);
+
+  /* ========== 去重：同一个滑块只给一次 ==========
+     参数同时来自三处（实测校正 / 风格预设 / 类型专项）。同一个滑块被写两三遍时，
+     读者看到的是互相对不上的区间——「去朦胧 -6~+4」和「去朦胧 +8~+16」并存就是这么来的。
+     这里按项目名合并：保留最靠前的一条（基础影调最贴近实测），后面的同名条目丢弃，
+     并在保留项里注明合并过，免得读者以为是两三步不同的调整。 */
+  const seenParam = Object.create(null);
+  groups = groups.map(function (g) {
+    const items = [];
+    g.items.forEach(function (it) {
+      const copy = Object.assign({}, it);
+      const key = paramKey(copy.name);
+      if (seenParam[key]) {
+        if (seenParam[key].why.indexOf('已合并') < 0) {
+          seenParam[key].why += '（同一项在本方案里还出现过一次，已合并：只按这里调一次，不要叠加。）';
+        }
+        return;
+      }
+      seenParam[key] = copy;
+      items.push(copy);
+    });
+    return { title: g.title, path: g.path, items: items };
+  }).filter(function (g) { return g.items.length; });
 
   // 风景里的「肤色」其实是落叶 / 土壤 / 岩石，标签要跟着类型走，否则读起来像误判
   const skinWord = (type === 'landscape' || type === 'pet') ? '暖色色域' : '肤色区域';
@@ -1249,7 +1314,15 @@ function buildPlan(type, style, m) {
     '。按「' + TYPES[type].name + ' + ' + style.name + '」给出 ' +
     groups.reduce((a, g) => a + g.items.length, 0) + ' 条可直接执行的 PS 参数。';
 
-  return { groups: groups, summary: summary, order: TYPES[type].order.slice() };
+  // 执行顺序里写死的「长边 4096 导出」必须跟着原图尺寸走，否则等于教人放大
+  const order = TYPES[type].order.map(function (s) {
+    if (s.indexOf('长边 4096 导出') < 0) return s;
+    return nativeLong
+      ? s.replace('长边 4096 导出', '长边 ' + printEdge + ' 导出（原图满尺寸，不放大）')
+      : s;
+  });
+
+  return { groups: groups, summary: summary, order: order };
 }
 
 /* ---------------- 8. 渲染 ---------------- */
