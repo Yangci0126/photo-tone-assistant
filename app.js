@@ -160,7 +160,7 @@ const STYLES = [
     curve: '黑场轻抬（输出 6）；高光轻压',
     split: '高光 色相 40 / 饱和 12；阴影 色相 28 / 饱和 6',
     hsl: { orange: { h: 0, s: 4, l: 8 }, yellow: { h: 0, s: 4, l: 6 }, blue: { h: 0, s: -8, l: 0 } },
-    extra: [mk('可选颜色 · 红色', '青色 -5 / 黄色 +8', '皮肤', '整体加暖最容易把皮肤烧成橙色，用可选颜色把肤色拉回来。', 'style', 'tune')]
+    extra: [mk('可选颜色 · 红色', '青色 -5 / 黄色 +8', '皮肤 / 暖色毛发', '整体加暖最容易把皮肤和暖色毛发烧成橙色，用可选颜色把颜色拉回来。', 'style', 'tune')]
   },
   {
     id: 'guofeng', name: '国风', cat: 'universal', tag: '通用',
@@ -232,14 +232,14 @@ const STYLES = [
   }
 ];
 
-const REC = { portrait: 'jp', coser: 'neon', landscape: 'clear' };
+const REC = { portrait: 'jp', coser: 'neon', landscape: 'clear', pet: 'warm' };
 const styleById = id => STYLES.filter(s => s.id === id)[0] || null;
 
 /* ---------------- 3. 类型元数据 ---------------- */
 const TYPES = {
   portrait: {
     name: '普通人物',
-    hint: '写真 · 日常 · 街拍 · 双人',
+    hint: '写真 · 日常 · 街拍',
     focus: '磨皮、肤色统一、液化与主体分离',
     icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><circle cx="12" cy="8.2" r="3.5"/><path d="M4.6 20.2c1.2-4.1 4-6.2 7.4-6.2s6.2 2.1 7.4 6.2"/></svg>',
     order: [
@@ -253,7 +253,7 @@ const TYPES = {
   },
   coser: {
     name: 'COSER',
-    hint: '二次元还原 · 妆造 · 棚拍外景',
+    hint: '二次元 · 妆造 · 棚拍',
     focus: '妆面强化、假发质感、环境光修正',
     icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2.6l1.9 4.9 5.2.5-3.9 3.5 1.1 5.1L12 13.9 7.7 16.6l1.1-5.1L4.9 8l5.2-.5z"/><path d="M8 19.6h8"/></svg>',
     order: [
@@ -267,7 +267,7 @@ const TYPES = {
   },
   landscape: {
     name: '自然风景',
-    hint: '山川 · 海景 · 森林 · 城市风光',
+    hint: '山川 · 海景 · 森林',
     focus: '去朦胧、天空渐变、层次与锐化',
     icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M2.6 18.6l5.6-7.4 3.6 4.6 2.6-3.1 6.9 5.9z"/><circle cx="17.2" cy="6.4" r="1.9"/></svg>',
     order: [
@@ -277,6 +277,20 @@ const TYPES = {
       'HSL 分组处理：天空蓝青、植被绿黄、土地橙黄',
       '蒙版：天空渐变压暗 + 前景提亮 + 视觉中心径向提亮',
       '输出锐化（景观锐化）+ 长边 4096 导出'
+    ]
+  },
+  pet: {
+    name: '宠物',
+    hint: '猫狗 · 毛孩 · 小动物',
+    focus: '毛发质感、眼睛眼神光、毛色还原',
+    icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><ellipse cx="12" cy="15.6" rx="4.1" ry="3.5"/><circle cx="6.5" cy="10.4" r="1.65"/><circle cx="9.9" cy="7.6" r="1.65"/><circle cx="14.1" cy="7.6" r="1.65"/><circle cx="17.5" cy="10.4" r="1.65"/></svg>',
+    order: [
+      '先校正曝光与白平衡：毛色对色温极敏感，偏黄偏绿会直接把毛色毁掉',
+      'Camera Raw 基本：白毛护高光 → 黑毛提阴影 → 对比微调（毛发不能一刀切）',
+      'HSL / 可选颜色：橙黄管毛色，白色单独处理白毛（减黄提亮）',
+      '回 PS：污点修复去泪痕 / 眼屎 / 脏点 → 眼睛与鼻头提亮',
+      '高反差保留锐化毛发（蒙版只刷毛发）→ 分层降噪保留细节',
+      '背景压暗或轻微虚化分离主体 → 导出 sRGB'
     ]
   }
 };
@@ -353,12 +367,14 @@ function analyze(img) {
 
   const hist = new Float64Array(256);
   const gray = new Float32Array(n);
+  const coatArr = new Uint8Array(n); // 0 非毛色 / 1 暖毛色 / 2 浅色毛
   const GX = 12, GY = 12;
   const cellSkin = new Float32Array(GX * GY);
   const cellAll = new Float32Array(GX * GY);
 
   let lumSum = 0, satSum = 0, rSum = 0, gSum = 0, bSum = 0;
   let skin = 0, sky = 0, foliage = 0, redP = 0, brown = 0, water = 0, neutralP = 0;
+  let fur = 0, paleFur = 0, furLum = 0;
   let skinX = 0, skinY = 0;
   let nR = 0, nG = 0, nB = 0, nCnt = 0;
   const hueBins = new Float64Array(12);
@@ -383,8 +399,8 @@ function analyze(img) {
       skin++; skinX += x; skinY += y; cellSkin[ci]++;
     }
 
-    // 天空：上半部偏蓝或极亮
-    if (y < h * 0.52 && ((b > r + 10 && lum > 68 && sat > 0.1) || (lum > 218 && y < h * 0.36))) sky++;
+    // 天空：上半部明显偏蓝，或极亮（差值阈值 22：灰蓝影棚背景、阴天灰都不再冒充天空）
+    if (y < h * 0.52 && ((b > r + 22 && lum > 68 && sat > 0.13) || (lum > 218 && y < h * 0.36))) sky++;
 
     // 植被
     if (g > r + 8 && g > b + 10 && lum > 28 && sat > 0.12) foliage++;
@@ -393,8 +409,15 @@ function analyze(img) {
     if (r > 110 && r > g + 34 && r > b + 44) redP++;
     if (r > g + 8 && g > b + 6 && lum > 38 && lum < 205 && sat > 0.1 && sat < 0.62) brown++;
 
+    // 毛色：暖棕 / 金毛 / 奶白。比 brown 放宽上限，覆盖浅色毛与高光毛
+    if (r >= g - 5 && g >= b * 0.86 && r - b > 13 && lum > 26 && lum < 228 && sat > 0.06) {
+      fur++; furLum += lum; coatArr[i] = 1;
+    } else if (sat < 0.14 && lum > 88 && lum < 250) {
+      paleFur++; furLum += lum; coatArr[i] = 2;
+    }
+
     // 水面 / 大面积平滑蓝青（下半部）
-    if (y > h * 0.5 && b > r + 12 && sat > 0.12 && sat < 0.5 && lum > 45 && lum < 205) water++;
+    if (y > h * 0.5 && b > r + 22 && sat > 0.12 && sat < 0.5 && lum > 45 && lum < 205) water++;
 
     // 中性灰（墙面 / 建筑）
     if (sat < 0.12 && lum > 55 && lum < 215) neutralP++;
@@ -414,7 +437,7 @@ function analyze(img) {
   }
 
   // 边缘密度 / 纹理
-  let edgeCnt = 0, gradSum = 0;
+  let edgeCnt = 0, gradSum = 0, midCnt = 0, centerMid = 0, centerAll = 0, coatEdge = 0;
   for (let y = 1; y < h - 1; y++) {
     for (let x = 1; x < w - 1; x++) {
       const i = y * w + x;
@@ -423,6 +446,14 @@ function analyze(img) {
       const mag = Math.abs(gx) + Math.abs(gy);
       gradSum += mag;
       if (mag > 70) edgeCnt++;
+      // 中频纹理（毛发、绒毛）：强度不高但极密。皮肤是平滑的，这里是两者的分水岭
+      if (mag > 26 && mag <= 100) midCnt++;
+      const inC = (x > w * 0.18 && x < w * 0.82 && y > h * 0.12 && y < h * 0.88);
+      if (inC) {
+        centerAll++;
+        if (mag > 26 && mag <= 100) centerMid++;
+      }
+      if (coatArr[i] && mag > 40) coatEdge++;
     }
   }
 
@@ -505,6 +536,14 @@ function analyze(img) {
     faceBox: bestBox, blobCount: blobs,
     edgeDensity: edgeCnt / n,
     detail: gradSum / n,
+    furPct: fur / n,
+    paleFurPct: paleFur / n,
+    // 毛色本身的平均亮度：判断黑毛 / 白毛要用它，而不是全图平均亮度
+    coatLum: (fur + paleFur) > 0 ? furLum / (fur + paleFur) : 0,
+    // 毛色像素里「落在边缘上」的比例：毛发高、皮肤低，是区分宠物与人的关键指标
+    coatTexture: coatEdge / Math.max(1, fur + paleFur),
+    centerMidPct: centerAll > 0 ? centerMid / centerAll : 0,
+    midEdgePct: midCnt / Math.max(1, (w - 2) * (h - 2)),
     hueTop: HUE_NAMES[hueTop],
     isNight: avgLum < 62,
     isLowContrast: contrast < 30,
@@ -519,8 +558,21 @@ function analyze(img) {
 function guessType(m) {
   const pScore = clamp(m.skinPct * 4.2, 0, 1) + (m.blobCount >= 1 ? 0.28 : 0) + (m.skinCy > 0.1 && m.skinCy < 0.62 ? 0.12 : 0);
   const lScore = clamp(m.skyPct * 1.5, 0, 0.75) + clamp(m.foliagePct * 1.8, 0, 0.7) + (m.isFlat ? 0.12 : 0);
+
+  // 宠物：颜色靠不住（暖色毛发几乎全部落进肤色判据），真正稳定的是「毛色面积 × 纹理密度」
+  const coatPct = m.furPct + m.paleFurPct * 0.5;
+  const petScore = 0.35 * clamp(coatPct / 0.4, 0, 1)
+    + 0.65 * clamp((m.centerMidPct - 0.18) / 0.20, 0, 1)
+    - clamp(m.skyPct * 0.8, 0, 0.35)
+    - clamp(m.foliagePct * 0.5, 0, 0.3)
+    - clamp((m.blobCount - 2) * 0.12, 0, 0.25);
+
   let type = 'portrait', conf = pScore, why = '肤色区域占比明显，判断为人物主体';
-  if (pScore < 0.3 && m.skyPct > 0.12) { type = 'landscape'; conf = lScore; why = '天空与自然色块占比高，判断为风光'; }
+  if (petScore > 0.36 && coatPct > 0.12) {
+    type = 'pet'; conf = petScore;
+    why = '毛色占比 ' + Math.round(coatPct * 100) + '%、纹理密集，判断为宠物主体';
+  }
+  else if (pScore < 0.3 && m.skyPct > 0.12) { type = 'landscape'; conf = lScore; why = '天空与自然色块占比高，判断为风光'; }
   else if (pScore < 0.55 && m.foliagePct > 0.3) { type = 'landscape'; conf = lScore; why = '植被覆盖率高，判断为自然场景'; }
   else if (pScore < 0.18 && lScore < 0.2) { type = 'portrait'; conf = 0.12; why = '未识别到明确主体，按人物类型起步更稳妥'; }
   return { type: type, conf: clamp(conf, 0, 1), why: why };
@@ -540,8 +592,8 @@ function hueRow(key, cfg, whyExtra) {
 function hslRelevant(key, m, type) {
   switch (key) {
     case 'red': return m.skinPct > 0.004 || m.redPct > 0.03 || type === 'coser';
-    case 'orange': return m.skinPct > 0.004 || m.brownPct > 0.1 || type === 'portrait' || type === 'coser';
-    case 'yellow': return m.foliagePct > 0.03 || m.brownPct > 0.1 || m.skinPct > 0.02;
+    case 'orange': return m.skinPct > 0.004 || m.brownPct > 0.1 || type === 'portrait' || type === 'coser' || type === 'pet';
+    case 'yellow': return m.foliagePct > 0.03 || m.brownPct > 0.1 || m.skinPct > 0.02 || type === 'pet';
     case 'green': return m.foliagePct > 0.02;
     case 'cyan': return m.skyPct > 0.02 || m.waterPct > 0.02;
     case 'blue': return m.skyPct > 0.03 || m.waterPct > 0.02 || m.neutralPct > 0.25 || type === 'coser';
@@ -551,7 +603,7 @@ function hslRelevant(key, m, type) {
 }
 
 function hslWhy(key, m) {
-  if (key === 'orange') return '橙色控制肤色，人像里一动橙色，皮肤立刻变干净或立刻变脏，所以放在最先调。';
+  if (key === 'orange') return '橙色既管肤色也管暖色毛发，人像和宠物图里一动橙色，皮肤与毛色立刻变干净或立刻变脏，所以放在最先调。';
   if (key === 'red') return '红色管嘴唇、妆容和红色道具，微调就能提气色。';
   if (key === 'green') return '绿色控制植被，风光里最容易「艳得失真」的就是绿色。';
   if (key === 'blue' || key === 'cyan') return '蓝青控制天空和水面，压暗明度能让天空有层次、不发白。';
@@ -746,6 +798,50 @@ function buildPlan(type, style, m) {
     );
   }
 
+  if (type === 'pet') {
+    const coatTxt = Math.round((m.furPct + m.paleFurPct) * 100);
+    const isWhiteCoat = m.paleFurPct > 0.14 || (m.coatLum > 178 && m.paleFurPct > 0.07);
+    const isDarkCoat = !isWhiteCoat && m.coatLum > 0 && m.coatLum < 108;
+    let coatVal, coatArea, coatWhy;
+    if (isDarkCoat) {
+      coatVal = '阴影 +25 ~ +45；黑色阶 +5 ~ +10；配合明度降噪 25~35';
+      coatArea = '黑毛区域 / 暗部毛发';
+      coatWhy = '毛色本身实测亮度 ' + Math.round(m.coatLum) + '/255，属于偏暗的毛。黑毛最怕「没有细节」——提阴影能救回毛丝层次，但会带出噪点，所以必须同步降噪。';
+    } else if (isWhiteCoat) {
+      coatVal = '高光 -40 ~ -70；白色阶 -8 ~ -15；高光区加一点点冷色（蓝色 饱和 +3）';
+      coatArea = '白毛区域 / 高光毛发';
+      coatWhy = '浅色毛占 ' + Math.round(m.paleFurPct * 100) + '%，最容易过曝成一片纯白、看不出毛丝。压高光保住层次，再给高光一点冷色，白毛才不会发黄发闷。';
+    } else {
+      coatVal = '高光 -20 ~ -40；阴影 +15 ~ +30；中间调对比 +6 ~ +14';
+      coatArea = '全身边缘毛发 / 背光面';
+      coatWhy = '毛色不黑不白（实测毛色亮度 ' + Math.round(m.coatLum) + '/255），重点是把背光面的毛丝拉出来、同时守住高光，让毛发有「体积」而不是一片平色。';
+    }
+    subject.push(
+      mk('污点修复 · 泪痕 / 眼屎 / 脏点', '画笔直径 = 瑕疵宽度 ×1.5；硬度 0%；类型「内容识别」；顽固泪痕追加「可选颜色 · 红色」黑色 -10', '眼角 / 嘴周 / 爪缝 / 毛发打结处',
+        '泪痕是红棕色的氧化痕迹，直接修补会留一块浅印。正确的顺序是「先修形状，再压掉红棕色」，这样毛色才接得上。', 'type', 'tune'),
+      mk('眼睛提亮 + 眼神光', '减淡工具曝光 10%~15%（范围「高光」）只刷瞳孔与高光点；USM 数量 80% 半径 0.6px 锐化瞳孔边缘', '瞳孔 / 眼白 / 睫毛',
+        '宠物的眼睛是唯一能跟观众对视的地方。黑瞳孔在暗部容易糊成一块死黑，提亮一度、锐化边缘，整只动物立刻「活」过来。', 'type', 'up'),
+      mk('鼻头湿润感', '减淡工具曝光 8%~12%，点一下鼻尖反光点；可选颜色「红色」饱和 +5', '鼻头 / 唇线',
+        '健康的鼻头是微湿反光的。补一个小高光比任何磨皮都更能传达「有生命」，注意别点成油光，高光点要小。', 'type', 'up'),
+      mk('可选颜色 · 毛色校正', '橙色通道 · 黄色 ' + (m.tempDelta > 6 ? '-10 ~ -18' : '-4 ~ -10') + '；白色通道 · 黄色 -15 ~ -25、黑色 -5 ~ -8', '全身毛发 / 白毛区',
+        '实测毛色像素约 ' + coatTxt + '%，白平衡 R−B = ' + fmtNum(m.tempDelta, 0) + '。室内灯光会把毛色照得发黄发脏，橙色减黄能把毛色拉回本色；白色毛单独减黄，是「白猫变雪白」的关键一步。', 'type', 'tune'),
+      mk(isDarkCoat ? '黑毛提阴影（护细节）' : (isWhiteCoat ? '白毛护高光（防死白）' : '毛色层次（保体积）'),
+        coatVal, coatArea, coatWhy, 'type', isDarkCoat ? 'up' : (isWhiteCoat ? 'down' : 'tune')),
+      mk('高反差保留 · 毛发锐化', '复制图层 → 高反差保留 半径 3~6px → 混合模式「线性光」→ 不透明度 40%~60%；蒙版擦掉背景与暗部', '毛发轮廓 / 胡须 / 耳朵绒毛',
+        '毛发是典型的高频细节，全局 USM 会把噪点一起放大。高反差保留只强化「结构」，配合蒙版能精准只作用于毛发，这是宠物图最有效的一招。', 'type', 'up'),
+      mk('毛发分区降噪', 'Camera Raw 细节：明度 20~35 / 颜色 25~40；用蒙版排除主体毛发，只作用背景与暗部', '背景 / 暗部毛发 / 虚化区',
+        '降噪和锐化是矛盾的，同一张图里只能分区做。先降背景噪点，再锐毛发，顺序反了细节就找不回来。', 'type', 'tune'),
+      mk('胡须与耳缘抠图', '选择并遮住：半径 1.5~2.5px，勾选「智能半径」，输出「新建带有图层蒙版的图层」', '胡须 / 耳缘 / 尾巴边缘',
+        '毛发边缘最容易出现「剪纸感」。换背景、压暗背景之前先把边缘处理干净，整张图的专业度差别全在这里。', 'type', 'tune'),
+      mk('背景虚化 · 分离主体', '抠出主体（选择并遮住）→ 背景做镜头模糊 半径 6~12px；保留地面接触处的投影，否则会「飘」', '主体以外的区域',
+        '宠物照多是居家环境，背景杂乱是常态。虚化比换背景自然得多，也比单纯压暗更像「拍出来的」浅景深。', 'type', 'tune')
+    );
+    if (m.blobCount >= 3) {
+      subject.push(mk('多只宠物', '分别建立蒙版，各自调白色平衡，毛色明度差控制在 ±10 以内', '每只动物单独一层',
+        '检测到约 ' + m.blobCount + ' 处毛色区块，多只同框时常出现「一只发黄一只发白」，必须分开校正。', 'type', 'tune'));
+    }
+  }
+
   /* ========== 局部精修 ========== */
   styleLocal.forEach(function (it) { local.push(it); });
 
@@ -754,18 +850,18 @@ function buildPlan(type, style, m) {
       '识别到天空占画面 ' + (m.skyPct * 100).toFixed(0) + '%，单独压暗能让天地分层，也避免整体压暗把地面弄脏。', 'local', 'down'));
   }
   if (m.skinPct > 0.012) {
-    local.push(mk('主体径向提亮', '径向滤镜以人物为中心，羽化 70%；曝光 +0.1 ~ +0.25EV；清晰度 +5', '人物 / 面部',
+    local.push(mk('主体径向提亮', '径向滤镜以' + (type === 'pet' ? '宠物头部' : '人物') + '为中心，羽化 70%；曝光 +0.1 ~ +0.25EV；清晰度 +5', type === 'pet' ? '宠物 / 头部 / 眼睛' : '人物 / 面部',
       '把视觉重心提亮一点，等于给观众指路。幅度要小，超过 0.4EV 就会看出「贴上去的光」。', 'local', 'up'));
-    local.push(mk('背景压暗', '选择人物 → 反选 → 曲线下压 -8 ~ -14（或用 Camera Raw 蒙版「背景」）', '人物以外的区域',
-      '人像的立体感来自主体与背景的明度差，压背景比提主体更自然，也不会让皮肤过曝。', 'local', 'down'));
+    local.push(mk('背景压暗', (type === 'pet' ? '选择主体 → 反选' : '选择人物 → 反选') + ' → 曲线下压 -8 ~ -14（或用 Camera Raw 蒙版「背景」）', '主体以外的区域',
+      (type === 'pet' ? '宠物' : '人像') + '的立体感来自主体与背景的明度差，压背景比提主体更自然，也不会让' + (type === 'pet' ? '白毛过曝' : '皮肤过曝') + '。', 'local', 'down'));
   }
   if (m.waterPct > 0.06) {
     local.push(mk('水面处理', '径向 / 渐变蒙版：高光 -15；清晰度 -10（柔化反光）；蓝色 饱和 +6', '水面 / 倒影',
       '水面占画面 ' + (m.waterPct * 100).toFixed(0) + '%，反光容易抢主体，柔化并压一点高光会安静很多。', 'local', 'down'));
   }
-  if (m.brownPct > 0.16 && m.skinPct < 0.03 && type !== 'landscape') {
+  if (m.brownPct > 0.16 && m.skinPct < 0.03 && type !== 'landscape' && type !== 'pet') {
     local.push(mk('疑似毛发 / 动物主体', '径向提亮 +0.2EV；锐化局部 数量 80% 半径 0.8px；眼睛单独提亮', '画面中部暖色主体',
-      '画面有 ' + (m.brownPct * 100).toFixed(0) + '% 的暖棕色调且无肤色特征，可能是宠物或毛绒主体，毛发的锐化与眼睛提亮是重点。', 'local', 'up'));
+      '画面有 ' + (m.brownPct * 100).toFixed(0) + '% 的暖棕色调且无肤色特征，可能是宠物或毛绒主体——如果是，建议把图片类型改成「宠物」，会给出毛发与眼睛的完整方案。', 'local', 'up'));
   }
   if (!local.length) {
     local.push(mk('局部加光减光', '新建「曲线」调整图层 + 蒙版，亮部 +5 / 暗部 -5', '视觉中心 / 四角',
@@ -774,13 +870,21 @@ function buildPlan(type, style, m) {
 
   /* ========== 细节与输出 ========== */
   const isPortraitLike = type === 'portrait' || type === 'coser';
-  detail.push(mk('USM 锐化',
-    isPortraitLike ? '数量 60%~80% / 半径 0.8~1.0px / 阈值 8~12' : '数量 80%~120% / 半径 1.0~1.4px / 阈值 3~5',
-    isPortraitLike ? '五官 / 发丝 / 服装（避开皮肤）' : '山脊 / 岩石 / 建筑边缘',
-    isPortraitLike
-      ? '人像锐化阈值要高，只让边缘被锐化，皮肤上的噪点不会被放大。建议复制图层加蒙版，只刷眼睛、睫毛、发丝和衣服。'
-      : '风光用「景观锐化」思路：半径略大、阈值低，让细节整体立起来，但注意天空区域要单独减掉，否则出噪点。',
-    'out', 'up'));
+  let usmVal, usmArea, usmWhy;
+  if (type === 'pet') {
+    usmVal = '数量 70%~100% / 半径 0.8~1.2px / 阈值 6~10';
+    usmArea = '毛发边缘 / 胡须 / 眼睛（避开背景与虚化区）';
+    usmWhy = '宠物锐化的对象是毛，不是整张图。阈值调到 6~10 只让毛发边缘被锐化，背景噪点不会被放大；更推荐用「高反差保留」替代 USM，可控性更好。';
+  } else if (isPortraitLike) {
+    usmVal = '数量 60%~80% / 半径 0.8~1.0px / 阈值 8~12';
+    usmArea = '五官 / 发丝 / 服装（避开皮肤）';
+    usmWhy = '人像锐化阈值要高，只让边缘被锐化，皮肤上的噪点不会被放大。建议复制图层加蒙版，只刷眼睛、睫毛、发丝和衣服。';
+  } else {
+    usmVal = '数量 80%~120% / 半径 1.0~1.4px / 阈值 3~5';
+    usmArea = '山脊 / 岩石 / 建筑边缘';
+    usmWhy = '风光用「景观锐化」思路：半径略大、阈值低，让细节整体立起来，但注意天空区域要单独减掉，否则出噪点。';
+  }
+  detail.push(mk('USM 锐化', usmVal, usmArea, usmWhy, 'out', 'up'));
 
   if (m.avgLum < 85 || m.isNight || m.shadowPct > 10) {
     detail.push(mk('减少杂色',
@@ -895,6 +999,8 @@ function renderDetect(m, type) {
   push('反差', Math.round(m.contrast));
   push('饱和度', (m.sat * 100).toFixed(0) + '%');
   if (m.skinPct > 0.005) push('肤色区域', (m.skinPct * 100).toFixed(1) + '%');
+  if (m.furPct + m.paleFurPct > 0.06) push('毛发 / 毛色块', Math.round((m.furPct + m.paleFurPct) * 100) + '%', type === 'pet');
+  if (m.coatTexture > 0.2 && (m.furPct + m.paleFurPct) > 0.06) push('毛色纹理密度', Math.round(m.coatTexture * 100) + '%');
   if (m.skyPct > 0.02) push('天空占比', (m.skyPct * 100).toFixed(0) + '%');
   if (m.foliagePct > 0.02) push('植被占比', (m.foliagePct * 100).toFixed(0) + '%');
   if (m.waterPct > 0.05) push('水面/反光', (m.waterPct * 100).toFixed(0) + '%');
@@ -1012,18 +1118,17 @@ function selectType(k, autoStyle) {
   state.type = k;
   $$('.type-card', el.typeList).forEach(b => b.setAttribute('aria-pressed', String(b.dataset.type === k)));
 
-  const prefTab = (k === 'landscape') ? 'landscape' : 'portrait';
+  const prefTab = k === 'landscape' ? 'landscape' : (k === 'pet' ? 'all' : 'portrait');
   const cur = state.styleId ? styleById(state.styleId) : null;
   const keep = !!(cur && (cur.cat === 'universal' || cur.cat === prefTab));
   state.tab = (keep && cur.cat === 'universal') ? 'all' : prefTab;
-  renderTabs();
 
-  if (autoStyle !== false && !keep) {
-    selectStyle(REC[k]);
-  } else {
-    renderStyles();
-    updateRun();
-  }
+  if (autoStyle !== false && !keep) state.styleId = REC[k];
+
+  renderTabs();
+  renderStyles();
+  applyPreview();
+  updateRun();
 }
 
 function selectStyle(id) {

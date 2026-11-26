@@ -207,7 +207,7 @@ kbd{
 .hint{font-size:12px;color:var(--dim);margin-left:auto}
 
 /* ---------------- 类型卡 ---------------- */
-.types{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:9px}
+.types{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px}
 .type-card{
   display:flex;flex-direction:column;gap:8px;
   padding:12px 11px;border-radius:12px;
@@ -224,8 +224,9 @@ kbd{
 }
 .tc-icon{width:22px;height:22px;color:var(--accent);opacity:.9}
 .tc-icon svg{width:100%;height:100%}
-.tc-body b{display:block;font-size:13.5px;font-weight:620}
-.tc-body em{display:block;font-style:normal;font-size:11px;color:var(--dim);margin-top:2px;line-height:1.45}
+.tc-body b{display:block;font-size:13.5px;font-weight:620;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.tc-body em{display:block;font-style:normal;font-size:11px;color:var(--dim);margin-top:2px;line-height:1.45;
+  display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
 .tc-check{
   position:absolute;top:9px;right:9px;width:16px;height:16px;border-radius:50%;
   display:grid;place-items:center;font-size:10px;
@@ -472,6 +473,10 @@ kbd{
 .noscript{padding:20px;text-align:center;color:var(--warn)}
 
 /* ---------------- 响应式 ---------------- */
+/* 双栏布局下右面板较窄，四张类型卡退成 2×2 更好读 */
+@media (max-width:1240px) and (min-width:1081px){
+  .types{grid-template-columns:repeat(2,minmax(0,1fr))}
+}
 @media (max-width:1080px){
   .stage{grid-template-columns:minmax(0,1fr)}
   .panel-preview{position:static}
